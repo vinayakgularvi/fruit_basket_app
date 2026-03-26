@@ -48,7 +48,18 @@ class AppRepository extends ChangeNotifier {
   List<Customer> activeCustomers() =>
       _customers.where((c) => c.active).toList();
 
-  int get todayDeliveryCount => activeCustomers().length;
+  int get todayDeliveryCount {
+    if (isDeliveryAgent && _currentUsername != null) {
+      return _customers
+          .where(
+            (c) =>
+                c.active &&
+                c.assignedDeliveryAgentUsername == _currentUsername,
+          )
+          .length;
+    }
+    return activeCustomers().length;
+  }
   int get perOrderPayoutRupees => 10;
   int get todayDeliveryPayoutRupees => todayDeliveryCount * perOrderPayoutRupees;
 
