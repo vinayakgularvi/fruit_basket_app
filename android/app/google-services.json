@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "848758944392",
+    "project_id": "fruit-basket-ab8fd",
+    "storage_bucket": "fruit-basket-ab8fd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:848758944392:android:5840aeafcd51f4cdcfe53d",
+        "android_client_info": {
+          "package_name": "com.example.fruitBasketApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDsEVRvC8Wxl6P8j07Sxzi7DkHLZ5PBCvM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

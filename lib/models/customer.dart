@@ -16,6 +16,7 @@ class Customer {
     this.requestedDeliveryTime = '',
     this.active = true,
     this.notes = '',
+    this.assignedDeliveryAgentUsername,
     this.paymentTrackedPeriodStart,
     this.weeklyPeriodPaid = false,
     this.monthlyAdvancePaid = false,
@@ -42,6 +43,7 @@ class Customer {
   final String requestedDeliveryTime;
   final bool active;
   final String notes;
+  final String? assignedDeliveryAgentUsername;
 
   /// First day of the billing period for which [weeklyPeriodPaid] / monthly flags apply.
   final DateTime? paymentTrackedPeriodStart;
@@ -73,6 +75,7 @@ class Customer {
     String? requestedDeliveryTime,
     bool? active,
     String? notes,
+    String? assignedDeliveryAgentUsername,
     DateTime? paymentTrackedPeriodStart,
     bool? weeklyPeriodPaid,
     bool? monthlyAdvancePaid,
@@ -99,6 +102,8 @@ class Customer {
           requestedDeliveryTime ?? this.requestedDeliveryTime,
       active: active ?? this.active,
       notes: notes ?? this.notes,
+      assignedDeliveryAgentUsername:
+          assignedDeliveryAgentUsername ?? this.assignedDeliveryAgentUsername,
       paymentTrackedPeriodStart:
           paymentTrackedPeriodStart ?? this.paymentTrackedPeriodStart,
       weeklyPeriodPaid: weeklyPeriodPaid ?? this.weeklyPeriodPaid,

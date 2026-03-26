@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../data/app_repository.dart';
 import 'customers_screen.dart';
 import 'dashboard_screen.dart';
 import 'delivery_screen.dart';
@@ -17,41 +19,64 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final repo = context.watch<AppRepository>();
+    final deliveryOnly = repo.isDeliveryAgent;
+    final screens = deliveryOnly
+        ? const [
+            DashboardScreen(),
+            DeliveryScreen(),
+          ]
+        : const [
+            DashboardScreen(),
+            CustomersScreen(),
+            DeliveryScreen(),
+            PaymentsScreen(),
+          ];
+    final nav = deliveryOnly
+        ? const [
+            NavigationDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard),
+              label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.local_shipping_outlined),
+              selectedIcon: Icon(Icons.local_shipping),
+              label: 'Deliveries',
+            ),
+          ]
+        : const [
+            NavigationDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard),
+              label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.people_outline),
+              selectedIcon: Icon(Icons.people),
+              label: 'Customers',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.local_shipping_outlined),
+              selectedIcon: Icon(Icons.local_shipping),
+              label: 'Deliveries',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.payments_outlined),
+              selectedIcon: Icon(Icons.payments),
+              label: 'Payments',
+            ),
+          ];
+    final selectedIndex = _index >= screens.length ? 0 : _index;
     return Scaffold(
       body: IndexedStack(
-        index: _index,
-        children: const [
-          DashboardScreen(),
-          CustomersScreen(),
-          DeliveryScreen(),
-          PaymentsScreen(),
-        ],
+        index: selectedIndex,
+        children: screens,
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
+        selectedIndex: selectedIndex,
         onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.people_outline),
-            selectedIcon: Icon(Icons.people),
-            label: 'Customers',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.local_shipping_outlined),
-            selectedIcon: Icon(Icons.local_shipping),
-            label: 'Deliveries',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.payments_outlined),
-            selectedIcon: Icon(Icons.payments),
-            label: 'Payments',
-          ),
-        ],
+        destinations: nav,
       ),
     );
   }

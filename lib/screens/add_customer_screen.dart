@@ -131,6 +131,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   bool _active = true;
 
   final _dateFmt = DateFormat.yMMMd();
+  String? _assignedDeliveryAgentUsername;
 
   @override
   void initState() {
@@ -146,6 +147,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       _planTier = e.planTier;
       _startDate = dateOnly(e.startDate);
       _active = e.active;
+      _assignedDeliveryAgentUsername = e.assignedDeliveryAgentUsername;
       _applyDeliveryTimeFromCustomer(e);
     } else {
       _startDate = dateOnly(DateTime.now());
@@ -244,6 +246,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       requestedDeliveryTime: time,
       active: editing != null ? _active : true,
       notes: _notes.text.trim(),
+      assignedDeliveryAgentUsername: _assignedDeliveryAgentUsername,
       paymentTrackedPeriodStart: editing?.paymentTrackedPeriodStart,
       weeklyPeriodPaid: editing?.weeklyPeriodPaid ?? false,
       monthlyAdvancePaid: editing?.monthlyAdvancePaid ?? false,
@@ -266,6 +269,9 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final repo = context.watch<AppRepository>();
+    final canAssignAgent = repo.isAdmin;
+    final agents = repo.deliveryAgentUsernames;
 
     final isEditing = widget.existing != null;
 
@@ -418,6 +424,29 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               ),
             ),
             const SizedBox(height: 8),
+            if (canAssignAgent) ...[
+              DropdownButtonFormField<String?>(
+                initialValue: _assignedDeliveryAgentUsername,
+                decoration: const InputDecoration(
+                  labelText: 'Assign delivery agent (optional)',
+                ),
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('Unassigned'),
+                  ),
+                  ...agents.map(
+                    (u) => DropdownMenuItem<String?>(
+                      value: u,
+                      child: Text(u),
+                    ),
+                  ),
+                ],
+                onChanged: (v) =>
+                    setState(() => _assignedDeliveryAgentUsername = v),
+              ),
+              const SizedBox(height: 12),
+            ],
             Text(
               'Preferred slot',
               style: Theme.of(context).textTheme.titleSmall,

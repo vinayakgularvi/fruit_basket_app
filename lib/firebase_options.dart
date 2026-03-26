@@ -4,6 +4,9 @@
 // NEVER put service account JSON (safety-tag-storageAccountKey.json) in the app.
 // That file is for servers only; use this client config for Flutter.
 //
+// FlutterFire CLI expects explicit `case TargetPlatform.android/ios:` + `throw
+// UnsupportedError` below so it can patch in `return android/ios;` and options.
+//
 // ignore_for_file: lines_longer_than_80_chars
 
 import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
@@ -25,6 +28,10 @@ class DefaultFirebaseOptions {
       return web;
     }
     switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return android;
+      case TargetPlatform.iOS:
+        return ios;
       case TargetPlatform.macOS:
         return macos;
       case TargetPlatform.windows:
@@ -32,7 +39,7 @@ class DefaultFirebaseOptions {
         return web;
       default:
         throw UnsupportedError(
-          'Add FirebaseOptions for this platform or run flutterfire configure.',
+          'DefaultFirebaseOptions are not supported for this platform.',
         );
     }
   }
@@ -55,6 +62,23 @@ class DefaultFirebaseOptions {
     messagingSenderId: '299521818533',
     projectId: 'fruit-basket-d3ffa',
     storageBucket: 'fruit-basket-d3ffa.appspot.com',
+    iosBundleId: 'com.example.fruitBasketApp',
+  );
+
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyDsEVRvC8Wxl6P8j07Sxzi7DkHLZ5PBCvM',
+    appId: '1:848758944392:android:5840aeafcd51f4cdcfe53d',
+    messagingSenderId: '848758944392',
+    projectId: 'fruit-basket-ab8fd',
+    storageBucket: 'fruit-basket-ab8fd.firebasestorage.app',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDywSWwpBp20pSDZz0bfEf3V6axq342UiY',
+    appId: '1:848758944392:ios:c31ffe59212b5050cfe53d',
+    messagingSenderId: '848758944392',
+    projectId: 'fruit-basket-ab8fd',
+    storageBucket: 'fruit-basket-ab8fd.firebasestorage.app',
     iosBundleId: 'com.example.fruitBasketApp',
   );
 }

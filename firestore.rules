@@ -6,5 +6,8 @@ service cloud.firestore {
     match /customers/{customerId} {
       allow read, write: if true;
     }
+    match /users/{userId} {
+      allow read, write: if true;
+    }
   }
 }

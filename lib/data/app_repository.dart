@@ -22,10 +22,23 @@ class AppRepository extends ChangeNotifier {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _customerSub;
   FirebaseFirestore? _firestore;
   bool _firebaseReady = false;
+  bool _isLoggedIn = false;
+  bool _authLoading = false;
+  String? _userRole;
+  String? _currentUsername;
+  List<String> _deliveryAgentUsernames = const [];
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
 
   bool get usesFirestore => _firebaseReady;
+  bool get isLoggedIn => _isLoggedIn;
+  bool get authLoading => _authLoading;
+  String? get userRole => _userRole;
+  String? get currentUsername => _currentUsername;
+  bool get isDeliveryAgent => _userRole == 'delivery_agent';
+  bool get isAdmin => _userRole == 'admin';
+  List<String> get deliveryAgentUsernames =>
+      List.unmodifiable(_deliveryAgentUsernames);
 
   /// True while Firestore is connected but the first `customers` snapshot has not arrived yet.
   bool get customersLoading => usesFirestore && !_customersReady;
@@ -36,6 +49,8 @@ class AppRepository extends ChangeNotifier {
       _customers.where((c) => c.active).toList();
 
   int get todayDeliveryCount => activeCustomers().length;
+  int get perOrderPayoutRupees => 10;
+  int get todayDeliveryPayoutRupees => todayDeliveryCount * perOrderPayoutRupees;
 
   /// Sum of active customers’ plan prices, scaled to an approximate monthly
   /// run-rate (weekly plans use delivery-day ratio vs monthly).
@@ -48,6 +63,21 @@ class AppRepository extends ChangeNotifier {
       );
     }
     return sum.toDouble();
+  }
+
+  /// Sum of active customers’ plan prices as an approximate weekly run-rate.
+  double get weeklyRevenueEstimate {
+    var sum = 0.0;
+    for (final c in activeCustomers()) {
+      if (c.billingPeriod == BillingPeriod.weekly) {
+        sum += c.planPriceRupees;
+      } else {
+        sum += c.planPriceRupees *
+            (BillingPeriod.weekly.deliveryDays /
+                BillingPeriod.monthly.deliveryDays);
+      }
+    }
+    return sum;
   }
 
   /// Derived from active customers and today’s payment rules.
@@ -76,9 +106,15 @@ class AppRepository extends ChangeNotifier {
 
   /// Active customers for [slot] (unsorted). Use for route optimization in UI.
   List<Customer> customersInDeliverySlot(DeliverySlot slot) {
-    return _customers
+    final list = _customers
         .where((c) => c.active && c.preferredSlot == slot)
         .toList();
+    if (isDeliveryAgent && _currentUsername != null) {
+      return list
+          .where((c) => c.assignedDeliveryAgentUsername == _currentUsername)
+          .toList();
+    }
+    return list;
   }
 
   List<Customer> customersForSlot(
@@ -149,6 +185,8 @@ class AppRepository extends ChangeNotifier {
               notifyListeners();
             },
           );
+      await _ensureDefaultUser();
+      await _refreshDeliveryAgentUsers();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
         'Firestore collection "customers", database=$kFirestoreDatabaseId',
@@ -159,6 +197,128 @@ class AppRepository extends ChangeNotifier {
       _firestore = null;
       _seed();
     }
+  }
+
+  Future<void> _ensureDefaultUser() async {
+    if (_firestore == null) return;
+    final users = _firestore!.collection('users');
+    const defaults = [
+      (
+        id: 'fruit_basket',
+        username: 'fruit_basket',
+        password: 'fruit_basket.26',
+        role: 'admin',
+      ),
+      (
+        id: 'alfa',
+        username: 'alfa',
+        password: 'alfa123',
+        role: 'delivery_agent',
+      ),
+    ];
+    for (final u in defaults) {
+      final ref = users.doc(u.id);
+      final snap = await ref.get();
+      if (snap.exists) {
+        await ref.set({
+          'username': u.username,
+          'password': u.password,
+          'role': u.role,
+          'active': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } else {
+        await ref.set({
+          'username': u.username,
+          'password': u.password,
+          'role': u.role,
+          'active': true,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshDeliveryAgentUsers() async {
+    if (_firestore == null) {
+      _deliveryAgentUsernames = const ['alfa'];
+      return;
+    }
+    final snap = await _firestore!
+        .collection('users')
+        .where('role', isEqualTo: 'delivery_agent')
+        .where('active', isEqualTo: true)
+        .get();
+    _deliveryAgentUsernames = snap.docs
+        .map((d) => (d.data()['username'] as String? ?? '').trim())
+        .where((u) => u.isNotEmpty)
+        .toList()
+      ..sort();
+  }
+
+  Future<void> addDeliveryAgentUser({
+    required String username,
+    required String password,
+  }) async {
+    final u = username.trim();
+    final p = password.trim();
+    if (u.isEmpty || p.isEmpty) return;
+    if (_firestore == null) return;
+    await _firestore!.collection('users').doc(u).set({
+      'username': u,
+      'password': p,
+      'role': 'delivery_agent',
+      'active': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    await _refreshDeliveryAgentUsers();
+    notifyListeners();
+  }
+
+  Future<bool> loginWithUsernamePassword(
+    String username,
+    String password,
+  ) async {
+    _authLoading = true;
+    notifyListeners();
+    try {
+      if (_firestore == null) {
+        // Fallback for local/offline mode.
+        final isAdmin =
+            username == 'fruit_basket' && password == 'fruit_basket.26';
+        final isAgent = username == 'alfa' && password == 'alfa123';
+        final ok = isAdmin || isAgent;
+        _isLoggedIn = ok;
+        _currentUsername = ok ? username : null;
+        _userRole = isAdmin
+            ? 'admin'
+            : (isAgent ? 'delivery_agent' : null);
+        return ok;
+      }
+      final snap = await _firestore!.collection('users').doc(username).get();
+      final d = snap.data();
+      final ok = d != null &&
+          d['active'] == true &&
+          d['username'] == username &&
+          d['password'] == password;
+      _isLoggedIn = ok;
+      _currentUsername = ok ? username : null;
+      _userRole = ok ? (d['role'] as String? ?? 'admin') : null;
+      await _refreshDeliveryAgentUsers();
+      return ok;
+    } finally {
+      _authLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void logout() {
+    _isLoggedIn = false;
+    _userRole = null;
+    _currentUsername = null;
+    notifyListeners();
   }
 
   void _onCustomersSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {

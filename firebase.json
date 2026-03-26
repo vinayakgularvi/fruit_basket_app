@@ -1,17 +1,1 @@
-{
-  "firestore": {
-    "rules": "firestore.rules"
-  },
-  "flutter": {
-    "platforms": {
-      "dart": {
-        "lib/firebase_options.dart": {
-          "projectId": "fruit-basket-ab8fd",
-          "configurations": {
-            "web": "1:848758944392:web:c4b9d675574a75eecfe53d"
-          }
-        }
-      }
-    }
-  }
-}
+{"firestore":{"rules":"firestore.rules"},"flutter":{"platforms":{"dart":{"lib/firebase_options.dart":{"projectId":"fruit-basket-ab8fd","configurations":{"ios":"1:848758944392:ios:c31ffe59212b5050cfe53d"}}},"android":{"default":{"projectId":"fruit-basket-ab8fd","appId":"1:848758944392:android:5840aeafcd51f4cdcfe53d","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"fruit-basket-ab8fd","appId":"1:848758944392:ios:c31ffe59212b5050cfe53d","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}}}}}

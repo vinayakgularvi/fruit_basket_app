@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'data/app_repository.dart';
 import 'screens/home_shell.dart';
+import 'screens/login_screen.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -22,11 +23,12 @@ class FruitBasketApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final repo = context.watch<AppRepository>();
     return MaterialApp(
       title: 'Fruit Basket',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
-      home: const HomeShell(),
+      home: repo.isLoggedIn ? const HomeShell() : const LoginScreen(),
     );
   }
 }

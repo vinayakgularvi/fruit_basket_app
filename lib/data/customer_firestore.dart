@@ -53,6 +53,7 @@ Map<String, dynamic> customerToFirestore(Customer c) {
     'requestedDeliveryTime': c.requestedDeliveryTime,
     'active': c.active,
     'notes': c.notes,
+    'assignedDeliveryAgentUsername': c.assignedDeliveryAgentUsername,
     'paymentTrackedPeriodStart': c.paymentTrackedPeriodStart == null
         ? null
         : Timestamp.fromDate(
@@ -121,6 +122,8 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     requestedDeliveryTime: _coerceString(d['requestedDeliveryTime']),
     active: _coerceBool(d['active']),
     notes: d['notes'] as String? ?? '',
+    assignedDeliveryAgentUsername:
+        _optionalString(d['assignedDeliveryAgentUsername']),
     paymentTrackedPeriodStart:
         _optionalDateOnly(d['paymentTrackedPeriodStart'], id),
     weeklyPeriodPaid: d['weeklyPeriodPaid'] as bool? ?? false,
@@ -140,6 +143,16 @@ int? _optionalInt(dynamic v) {
   if (v == null) return null;
   if (v is num) return v.toInt();
   return int.tryParse(v.toString());
+}
+
+String? _optionalString(dynamic v) {
+  if (v == null) return null;
+  if (v is String) {
+    final t = v.trim();
+    return t.isEmpty ? null : t;
+  }
+  final t = v.toString().trim();
+  return t.isEmpty ? null : t;
 }
 
 DateTime? _optionalDateOnly(dynamic v, String docId) {
