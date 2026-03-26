@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
 import '../models/customer.dart';
@@ -16,6 +17,10 @@ import 'customer_firestore.dart';
 
 class AppRepository extends ChangeNotifier {
   AppRepository();
+
+  static const _kSessionLoggedIn = 'session_logged_in';
+  static const _kSessionUsername = 'session_username';
+  static const _kSessionRole = 'session_role';
 
   final List<Customer> _customers = [];
   final Map<String, bool> _deliveryDoneToday = {};
@@ -160,6 +165,7 @@ class AppRepository extends ChangeNotifier {
 
   /// Call from `main()` before `runApp`. Uses Firestore database [kFirestoreDatabaseId].
   Future<void> initFirebase() async {
+    await _restoreSession();
     if (firebaseOptionsArePlaceholder) {
       debugPrint(
         'Firebase: replace REPLACE_ME in lib/firebase_options.dart '
@@ -167,6 +173,7 @@ class AppRepository extends ChangeNotifier {
         'Using local sample data.',
       );
       _seed();
+      notifyListeners();
       return;
     }
     try {
@@ -202,12 +209,43 @@ class AppRepository extends ChangeNotifier {
         'Firebase OK — project=${Firebase.app().options.projectId}, '
         'Firestore collection "customers", database=$kFirestoreDatabaseId',
       );
+      notifyListeners();
     } catch (e, st) {
       debugPrint('Firebase init failed (check database ID & rules): $e\n$st');
       _firebaseReady = false;
       _firestore = null;
       _seed();
+      notifyListeners();
     }
+  }
+
+  Future<void> _restoreSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final loggedIn = prefs.getBool(_kSessionLoggedIn) ?? false;
+    if (!loggedIn) return;
+    final username = prefs.getString(_kSessionUsername);
+    final role = prefs.getString(_kSessionRole);
+    if (username == null || role == null) return;
+    _isLoggedIn = true;
+    _currentUsername = username;
+    _userRole = role;
+  }
+
+  Future<void> _saveSession({
+    required String username,
+    required String role,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kSessionLoggedIn, true);
+    await prefs.setString(_kSessionUsername, username);
+    await prefs.setString(_kSessionRole, role);
+  }
+
+  Future<void> _clearSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kSessionLoggedIn);
+    await prefs.remove(_kSessionUsername);
+    await prefs.remove(_kSessionRole);
   }
 
   Future<void> _ensureDefaultUser() async {
@@ -306,6 +344,14 @@ class AppRepository extends ChangeNotifier {
         _userRole = isAdmin
             ? 'admin'
             : (isAgent ? 'delivery_agent' : null);
+        if (ok) {
+          await _saveSession(
+            username: username,
+            role: _userRole ?? 'delivery_agent',
+          );
+        } else {
+          await _clearSession();
+        }
         return ok;
       }
       final snap = await _firestore!.collection('users').doc(username).get();
@@ -318,6 +364,14 @@ class AppRepository extends ChangeNotifier {
       _currentUsername = ok ? username : null;
       _userRole = ok ? (d['role'] as String? ?? 'admin') : null;
       await _refreshDeliveryAgentUsers();
+      if (ok) {
+        await _saveSession(
+          username: username,
+          role: _userRole ?? 'admin',
+        );
+      } else {
+        await _clearSession();
+      }
       return ok;
     } finally {
       _authLoading = false;
@@ -329,6 +383,7 @@ class AppRepository extends ChangeNotifier {
     _isLoggedIn = false;
     _userRole = null;
     _currentUsername = null;
+    unawaited(_clearSession());
     notifyListeners();
   }
 
