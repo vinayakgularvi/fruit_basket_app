@@ -17,6 +17,8 @@ class Customer {
     this.active = true,
     this.notes = '',
     this.assignedDeliveryAgentUsername,
+    this.skippedDeliveryDays = 0,
+    this.skippedDeliveryDates = const [],
     this.paymentTrackedPeriodStart,
     this.weeklyPeriodPaid = false,
     this.monthlyAdvancePaid = false,
@@ -44,6 +46,8 @@ class Customer {
   final bool active;
   final String notes;
   final String? assignedDeliveryAgentUsername;
+  final int skippedDeliveryDays;
+  final List<DateTime> skippedDeliveryDates;
 
   /// First day of the billing period for which [weeklyPeriodPaid] / monthly flags apply.
   final DateTime? paymentTrackedPeriodStart;
@@ -76,6 +80,8 @@ class Customer {
     bool? active,
     String? notes,
     String? assignedDeliveryAgentUsername,
+    int? skippedDeliveryDays,
+    List<DateTime>? skippedDeliveryDates,
     DateTime? paymentTrackedPeriodStart,
     bool? weeklyPeriodPaid,
     bool? monthlyAdvancePaid,
@@ -104,6 +110,9 @@ class Customer {
       notes: notes ?? this.notes,
       assignedDeliveryAgentUsername:
           assignedDeliveryAgentUsername ?? this.assignedDeliveryAgentUsername,
+      skippedDeliveryDays: skippedDeliveryDays ?? this.skippedDeliveryDays,
+      skippedDeliveryDates:
+          skippedDeliveryDates ?? this.skippedDeliveryDates,
       paymentTrackedPeriodStart:
           paymentTrackedPeriodStart ?? this.paymentTrackedPeriodStart,
       weeklyPeriodPaid: weeklyPeriodPaid ?? this.weeklyPeriodPaid,

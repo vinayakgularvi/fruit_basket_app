@@ -247,6 +247,8 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       active: editing != null ? _active : true,
       notes: _notes.text.trim(),
       assignedDeliveryAgentUsername: _assignedDeliveryAgentUsername,
+      skippedDeliveryDays: editing?.skippedDeliveryDays ?? 0,
+      skippedDeliveryDates: editing?.skippedDeliveryDates ?? const [],
       paymentTrackedPeriodStart: editing?.paymentTrackedPeriodStart,
       weeklyPeriodPaid: editing?.weeklyPeriodPaid ?? false,
       monthlyAdvancePaid: editing?.monthlyAdvancePaid ?? false,

@@ -1,0 +1,14 @@
+.git
+.dart_tool
+.idea
+.vscode
+build
+ios
+android
+macos
+linux
+windows
+test
+tool
+firebase-debug.log
+*.iml

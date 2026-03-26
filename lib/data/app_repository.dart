@@ -411,6 +411,43 @@ class AppRepository extends ChangeNotifier {
     }
   }
 
+  /// Marks [skippedDate] as skipped and extends [endDate] based on total skips.
+  Future<void> skipDeliveryDate(
+    String customerId,
+    DateTime skippedDate,
+  ) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    final skipDate = dateOnly(skippedDate);
+    final nextDates = List<DateTime>.from(c.skippedDeliveryDates);
+    if (!nextDates.any(
+      (d) => d.year == skipDate.year && d.month == skipDate.month && d.day == skipDate.day,
+    )) {
+      nextDates.add(skipDate);
+    }
+    nextDates.sort((a, b) => a.compareTo(b));
+    final nextSkipped = nextDates.length > c.skippedDeliveryDays
+        ? nextDates.length
+        : c.skippedDeliveryDays;
+    final newEnd = endDateAfterDeliveryDays(
+      dateOnly(c.startDate),
+      c.billingPeriod.deliveryDays + nextSkipped,
+    );
+    await updateCustomer(
+      c.copyWith(
+        skippedDeliveryDays: nextSkipped,
+        skippedDeliveryDates: nextDates,
+        endDate: dateOnly(newEnd),
+      ),
+    );
+  }
+
+  /// Convenience action used by old UI paths.
+  Future<void> skipOneDeliveryDay(String customerId) {
+    return skipDeliveryDate(customerId, DateTime.now());
+  }
+
   /// Mark a scheduled payment collected (updates customer payment flags in Firestore).
   /// [collectedAmountRupees] is the actual cash taken; omit or pass null to use the
   /// scheduled amount from [defaultCollectionAmountRupees].

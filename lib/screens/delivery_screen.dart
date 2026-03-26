@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../data/app_repository.dart';
 import '../models/customer.dart';
 import '../models/delivery_slot.dart';
+import '../models/payment.dart' show PaymentCollectionKind;
 import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_optimizer.dart';
 import '../utils/delivery_route_sort.dart';
@@ -27,6 +28,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   /// Depot / vehicle start (WGS84). Default: central Home — tap edit when Route sort is on.
 double _routeStartLat = 13.36139;
 double _routeStartLng = 77.11169;
+
+  String _addressWithoutUrls(String raw) {
+    final noUrls = raw.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
+    return noUrls.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
 
   Future<void> _editRouteStart(BuildContext context) async {
     final latCtrl =
@@ -291,8 +297,12 @@ double _routeStartLng = 77.11169;
                       final hasMapsLink = mapsUriFromAddress(c.address) != null;
                       final day = dateOnly(DateTime.now());
                       final due = paymentDueForCustomer(c, day);
-                      final dueNextDay =
+                      final dueNextDayRaw =
                           paymentDueForNextCalendarDay(c, day);
+                      final dueNextDay = dueNextDayRaw?.kind ==
+                              PaymentCollectionKind.monthlyAdvance
+                          ? null
+                          : dueNextDayRaw;
                       final legKm =
                           routeKm != null && i < routeKm.length
                               ? routeKm[i]
@@ -382,7 +392,7 @@ double _routeStartLng = 77.11169;
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      c.address,
+                                      _addressWithoutUrls(c.address),
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
@@ -401,15 +411,6 @@ double _routeStartLng = 77.11169;
                                               color: cs.tertiary,
                                               fontWeight: FontWeight.w600,
                                             ),
-                                      ),
-                                    ],
-                                    if (c.notes.isNotEmpty) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        c.notes,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
                                       ),
                                     ],
                                     if (due != null) ...[

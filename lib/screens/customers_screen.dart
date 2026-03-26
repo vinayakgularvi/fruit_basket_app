@@ -241,6 +241,31 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                             fontWeight: FontWeight.w500,
                                           ),
                                     ),
+                                    if (c.skippedDeliveryDays > 0) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Skipped days: ${c.skippedDeliveryDays}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: cs.tertiary,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                      if (c.skippedDeliveryDates.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Dates: ${c.skippedDeliveryDates.map(df.format).join(', ')}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: cs.onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                    ],
                                     const SizedBox(height: 2),
                                     Text(
                                       c.address,
@@ -312,6 +337,30 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                     ],
                                   ],
                                 ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.event_busy_outlined),
+                                tooltip: 'Select skipped date',
+                                onPressed: () async {
+                                  final picked = await showDatePicker(
+                                    context: context,
+                                    initialDate: DateTime.now().isBefore(c.startDate)
+                                        ? c.startDate
+                                        : DateTime.now(),
+                                    firstDate: c.startDate,
+                                    lastDate: c.endDate.add(const Duration(days: 365)),
+                                  );
+                                  if (picked == null) return;
+                                  await repo.skipDeliveryDate(c.id, picked);
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Skipped date saved: ${df.format(picked)}.',
+                                      ),
+                                    ),
+                                  );
+                                },
                               ),
                               IconButton(
                                 icon: const Icon(Icons.edit_outlined),

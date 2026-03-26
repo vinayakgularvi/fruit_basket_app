@@ -54,6 +54,12 @@ Map<String, dynamic> customerToFirestore(Customer c) {
     'active': c.active,
     'notes': c.notes,
     'assignedDeliveryAgentUsername': c.assignedDeliveryAgentUsername,
+    'skippedDeliveryDays': c.skippedDeliveryDays,
+    'skippedDeliveryDates': c.skippedDeliveryDates
+        .map(
+          (d) => Timestamp.fromDate(DateTime(d.year, d.month, d.day)),
+        )
+        .toList(),
     'paymentTrackedPeriodStart': c.paymentTrackedPeriodStart == null
         ? null
         : Timestamp.fromDate(
@@ -124,6 +130,12 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     notes: d['notes'] as String? ?? '',
     assignedDeliveryAgentUsername:
         _optionalString(d['assignedDeliveryAgentUsername']),
+    skippedDeliveryDays: _optionalInt(d['skippedDeliveryDays']) ?? 0,
+    skippedDeliveryDates: _optionalDateList(
+      d['skippedDeliveryDates'],
+      id,
+      'skippedDeliveryDates',
+    ),
     paymentTrackedPeriodStart:
         _optionalDateOnly(d['paymentTrackedPeriodStart'], id),
     weeklyPeriodPaid: d['weeklyPeriodPaid'] as bool? ?? false,
@@ -153,6 +165,20 @@ String? _optionalString(dynamic v) {
   }
   final t = v.toString().trim();
   return t.isEmpty ? null : t;
+}
+
+List<DateTime> _optionalDateList(dynamic v, String docId, String field) {
+  if (v == null || v is! List) return const [];
+  final out = <DateTime>[];
+  for (final item in v) {
+    try {
+      final d = _coerceDate(item, docId, field);
+      out.add(DateTime(d.year, d.month, d.day));
+    } catch (_) {
+      // Ignore invalid list entries and keep parsing others.
+    }
+  }
+  return out;
 }
 
 DateTime? _optionalDateOnly(dynamic v, String docId) {
