@@ -11,17 +11,21 @@ void showPaymentRecordedWithUndo(
   Customer snapshotBefore,
 ) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: const Text('Payment recorded'),
-      duration: const Duration(seconds: 6),
-      action: SnackBarAction(
-        label: 'Undo',
-        onPressed: () {
-          unawaited(repo.updateCustomer(snapshotBefore));
-        },
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger == null) return;
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text('Payment recorded'),
+        duration: const Duration(seconds: 10),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            unawaited(repo.updateCustomer(snapshotBefore));
+          },
+        ),
       ),
-    ),
-  );
+    );
+  });
 }
