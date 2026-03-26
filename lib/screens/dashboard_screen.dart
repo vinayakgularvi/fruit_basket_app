@@ -34,33 +34,52 @@ class DashboardScreen extends StatelessWidget {
           LayoutBuilder(
             builder: (context, constraints) {
               final w = constraints.maxWidth;
-              final cross = w > 520 ? 3 : 1;
-              return GridView.count(
-                crossAxisCount: cross,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                childAspectRatio: cross == 3 ? 1.35 : 2.4,
+              final wide = w > 560;
+              final cards = [
+                _StatCard(
+                  icon: Icons.local_shipping,
+                  label: 'Today’s deliveries',
+                  value: '${repo.todayDeliveryCount}',
+                  subtitle: 'stops planned',
+                ),
+                _StatCard(
+                  icon: Icons.people,
+                  label: 'Active customers',
+                  value: '${repo.activeCustomers().length}',
+                  subtitle: 'on subscription',
+                ),
+                _StatCard(
+                  icon: Icons.currency_rupee,
+                  label: 'Subscription revenue',
+                  value: currency.format(repo.monthlyRevenueEstimate),
+                  subtitle: '≈ monthly from all active plan prices',
+                ),
+                _StatCard(
+                  icon: Icons.payments_outlined,
+                  label: 'Pending payments',
+                  value: currency.format(repo.totalPendingAmount),
+                  subtitle: repo.pendingPayments.isEmpty
+                      ? 'none due'
+                      : '${repo.pendingPayments.length} to collect',
+                ),
+              ];
+              if (wide) {
+                return GridView.count(
+                  crossAxisCount: 2,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: w > 900 ? 1.5 : 1.35,
+                  children: cards,
+                );
+              }
+              return Column(
                 children: [
-                  _StatCard(
-                    icon: Icons.local_shipping,
-                    label: 'Today’s deliveries',
-                    value: '${repo.todayDeliveryCount}',
-                    subtitle: 'stops planned',
-                  ),
-                  _StatCard(
-                    icon: Icons.people,
-                    label: 'Active customers',
-                    value: '${repo.activeCustomers().length}',
-                    subtitle: 'on subscription',
-                  ),
-                  _StatCard(
-                    icon: Icons.currency_rupee,
-                    label: 'Revenue (est.)',
-                    value: currency.format(repo.monthlyRevenueEstimate),
-                    subtitle: 'monthly run-rate',
-                  ),
+                  for (var i = 0; i < cards.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 12),
+                    cards[i],
+                  ],
                 ],
               );
             },
@@ -142,32 +161,39 @@ class _StatCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: cs.primary, size: 28),
-            const SizedBox(height: 12),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: cs.onSurfaceVariant,
+            Icon(icon, color: cs.primary, size: 26),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
                   ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              value,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                  const SizedBox(height: 4),
+                  Text(
+                    value,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                   ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
                   ),
+                ],
+              ),
             ),
           ],
         ),

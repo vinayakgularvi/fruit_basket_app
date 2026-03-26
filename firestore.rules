@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // DEV / personal shop tool — no Firebase Auth in the app yet.
+    // TODO: Replace with request.auth != null and match your users before production.
+    match /customers/{customerId} {
+      allow read, write: if true;
+    }
+  }
+}

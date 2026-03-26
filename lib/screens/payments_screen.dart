@@ -3,6 +3,10 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import '../utils/delivery_plan_dates.dart';
+import '../utils/payment_schedule.dart';
+import '../widgets/collected_amount_dialog.dart';
+import '../widgets/payment_undo_snackbar.dart';
 
 class PaymentsScreen extends StatelessWidget {
   const PaymentsScreen({super.key});
@@ -79,6 +83,17 @@ class PaymentsScreen extends StatelessWidget {
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemBuilder: (context, i) {
                       final p = pending[i];
+                      final matches = repo.customers
+                          .where((c) => c.id == p.customerId)
+                          .toList();
+                      final cust =
+                          matches.isEmpty ? null : matches.first;
+                      final dueNextDay = cust == null
+                          ? null
+                          : paymentDueForNextCalendarDay(
+                              cust,
+                              dateOnly(DateTime.now()),
+                            );
                       return Card(
                         child: Padding(
                           padding: const EdgeInsets.all(16),
@@ -125,11 +140,52 @@ class PaymentsScreen extends StatelessWidget {
                                   ),
                                 ],
                               ),
+                              if (dueNextDay != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  'Next day: ₹${dueNextDay.amountRupees} · ${dueNextDay.label}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
                               const SizedBox(height: 12),
                               Align(
                                 alignment: Alignment.centerRight,
                                 child: FilledButton.tonal(
-                                  onPressed: () => repo.markPaymentPaid(p.id),
+                                  onPressed: p.kind == null || cust == null
+                                      ? null
+                                      : () async {
+                                          final before = cust;
+                                          final amount =
+                                              await showCollectedAmountDialog(
+                                            context,
+                                            suggestedRupees:
+                                                p.amount.round(),
+                                            title:
+                                                'Mark paid — ${p.customerName}',
+                                          );
+                                          if (!context.mounted ||
+                                              amount == null) {
+                                            return;
+                                          }
+                                          await repo.recordPaymentCollection(
+                                            p.customerId,
+                                            p.kind!,
+                                            collectedAmountRupees: amount,
+                                          );
+                                          if (!context.mounted) return;
+                                          showPaymentRecordedWithUndo(
+                                            context,
+                                            repo,
+                                            before,
+                                          );
+                                        },
                                   child: const Text('Mark paid'),
                                 ),
                               ),

@@ -11,3 +11,9 @@ build/
 
 # Misc
 .DS_Store
+
+# Never commit Firebase service account keys or admin SDK JSON
+*safety-tag*.json
+*storageAccount*.json
+*firebase-adminsdk*.json
+*serviceAccount*.json

@@ -13,7 +13,7 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _index = 2;
+  int _index = 0;
 
   @override
   Widget build(BuildContext context) {

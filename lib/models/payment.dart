@@ -1,5 +1,12 @@
 enum PaymentStatus { pending, paid }
 
+/// Scheduled collection type (weekly full / monthly advance / monthly balance).
+enum PaymentCollectionKind {
+  weeklyFull,
+  monthlyAdvance,
+  monthlyBalance,
+}
+
 class Payment {
   const Payment({
     required this.id,
@@ -7,6 +14,7 @@ class Payment {
     required this.customerName,
     required this.amount,
     required this.dueLabel,
+    this.kind,
     this.status = PaymentStatus.pending,
   });
 
@@ -15,5 +23,7 @@ class Payment {
   final String customerName;
   final double amount;
   final String dueLabel;
+  /// Set when derived from [paymentDueForCustomer].
+  final PaymentCollectionKind? kind;
   final PaymentStatus status;
 }

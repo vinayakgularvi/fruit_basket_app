@@ -1,0 +1,17 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "fruit-basket-ab8fd",
+          "configurations": {
+            "web": "1:848758944392:web:c4b9d675574a75eecfe53d"
+          }
+        }
+      }
+    }
+  }
+}

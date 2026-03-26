@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import 'package:intl/intl.dart';
+
 import '../models/customer.dart';
 import '../models/delivery_slot.dart';
+import '../models/subscription_plan.dart';
 import 'add_customer_screen.dart';
 
 enum _CustomerFilter { all, morning, evening, activeOnly, inactiveOnly }
@@ -30,7 +33,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
     String query,
     _CustomerFilter f,
   ) {
-    var list = all;
+    // `repo.customers` is unmodifiable; sort() requires a mutable list.
+    var list = List<Customer>.from(all);
     final q = query.trim().toLowerCase();
     if (q.isNotEmpty) {
       list = list.where((c) {
@@ -140,22 +144,46 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ),
           const SizedBox(height: 8),
           Expanded(
-            child: items.isEmpty
-                ? Center(
-                    child: Text(
-                      'No customers match your search.',
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  )
-                : ListView.separated(
+            child: repo.customersLoading
+                ? const Center(child: CircularProgressIndicator())
+                : RefreshIndicator(
+                    onRefresh: () => repo.refreshCustomers(),
+                    child: items.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
+                            children: [
+                              SizedBox(
+                                height:
+                                    MediaQuery.sizeOf(context).height * 0.35,
+                                child: Center(
+                                  child: Text(
+                                    'No customers match your search.',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyLarge
+                                        ?.copyWith(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
                     itemCount: items.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemBuilder: (context, i) {
                       final c = items[i];
                       final cs = Theme.of(context).colorScheme;
+                      final df = DateFormat.yMMMd();
+                      final dtf = DateFormat.yMMMd().add_jm();
+                      final periodShort =
+                          c.billingPeriod == BillingPeriod.weekly ? 'wk' : 'mo';
                       return Card(
                         child: Padding(
                           padding: const EdgeInsets.all(12),
@@ -204,12 +232,74 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
+                                      '${c.planTier.title} · ₹${c.planPriceRupees}/$periodShort · ${df.format(c.startDate)} → ${df.format(c.endDate)}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: cs.primary,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
                                       c.address,
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
                                           ?.copyWith(color: cs.onSurfaceVariant),
                                     ),
+                                    if (c.requestedDeliveryTime.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Delivery time: ${c.requestedDeliveryTime}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: cs.tertiary,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                      ),
+                                    ],
+                                    if (c.notes.trim().isNotEmpty) ...[
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Notes',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: cs.onSurfaceVariant,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        c.notes.trim(),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: cs.onSurfaceVariant,
+                                            ),
+                                      ),
+                                    ],
+                                    if (c.lastPaymentAmountRupees != null &&
+                                        c.lastPaymentAt != null) ...[
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Last collected: ₹${c.lastPaymentAmountRupees} · '
+                                        '${dtf.format(c.lastPaymentAt!)}'
+                                        '${c.lastPaymentKind != null ? ' · ${c.lastPaymentKind}' : ''}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: cs.primary,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                      ),
+                                    ],
                                     if (!c.active) ...[
                                       const SizedBox(height: 6),
                                       Text(
@@ -223,11 +313,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                   ],
                                 ),
                               ),
+                              IconButton(
+                                icon: const Icon(Icons.edit_outlined),
+                                tooltip: 'Edit customer',
+                                onPressed: () async {
+                                  await Navigator.of(context).push<void>(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) =>
+                                          AddCustomerScreen(existing: c),
+                                    ),
+                                  );
+                                },
+                              ),
                             ],
                           ),
                         ),
                       );
                     },
+                  ),
                   ),
           ),
         ],

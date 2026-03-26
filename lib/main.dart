@@ -5,11 +5,13 @@ import 'data/app_repository.dart';
 import 'screens/home_shell.dart';
 import 'theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final repo = AppRepository();
+  await repo.initFirebase();
   runApp(
     ChangeNotifierProvider(
-      create: (_) => AppRepository(),
+      create: (_) => repo,
       child: const FruitBasketApp(),
     ),
   );
