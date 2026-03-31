@@ -28,6 +28,8 @@ class Customer {
     this.lastPaymentKind,
     this.pendingDueKind,
     this.pendingDueRemainingRupees,
+    this.customerCreated = true,
+    this.adminApproved = false,
   });
 
   final String id;
@@ -64,6 +66,8 @@ class Customer {
   /// When a collection was short, the slot still owed (same period as [paymentTrackedPeriodStart]).
   final String? pendingDueKind;
   final int? pendingDueRemainingRupees;
+  final bool customerCreated;
+  final bool adminApproved;
 
   Customer copyWith({
     String? id,
@@ -91,6 +95,8 @@ class Customer {
     String? lastPaymentKind,
     String? pendingDueKind,
     int? pendingDueRemainingRupees,
+    bool? customerCreated,
+    bool? adminApproved,
     bool clearPendingDue = false,
   }) {
     return Customer(
@@ -127,6 +133,8 @@ class Customer {
       pendingDueRemainingRupees: clearPendingDue
           ? null
           : (pendingDueRemainingRupees ?? this.pendingDueRemainingRupees),
+      customerCreated: customerCreated ?? this.customerCreated,
+      adminApproved: adminApproved ?? this.adminApproved,
     );
   }
 }

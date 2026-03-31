@@ -79,6 +79,8 @@ Map<String, dynamic> customerToFirestore(Customer c) {
     'lastPaymentKind': c.lastPaymentKind,
     'pendingDueKind': c.pendingDueKind,
     'pendingDueRemainingRupees': c.pendingDueRemainingRupees,
+    'customerCreated': c.customerCreated,
+    'adminApproved': c.adminApproved,
     'updatedAt': FieldValue.serverTimestamp(),
   };
 }
@@ -148,6 +150,8 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     lastPaymentKind: d['lastPaymentKind'] as String?,
     pendingDueKind: d['pendingDueKind'] as String?,
     pendingDueRemainingRupees: _optionalInt(d['pendingDueRemainingRupees']),
+    customerCreated: d['customerCreated'] as bool? ?? true,
+    adminApproved: d['adminApproved'] as bool? ?? false,
   );
 }
 

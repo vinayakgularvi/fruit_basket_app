@@ -67,6 +67,9 @@ class AppRepository extends ChangeNotifier {
   }
   int get perOrderPayoutRupees => 10;
   int get todayDeliveryPayoutRupees => todayDeliveryCount * perOrderPayoutRupees;
+  int get newCustomersPendingApprovalCount => _customers
+      .where((c) => c.customerCreated && !c.adminApproved)
+      .length;
 
   /// Sum of active customers’ plan prices, scaled to an approximate monthly
   /// run-rate (weekly plans use delivery-day ratio vs monthly).
@@ -108,6 +111,7 @@ class AppRepository extends ChangeNotifier {
           id: '${c.id}|${due.kind.name}',
           customerId: c.id,
           customerName: c.name,
+          phone: c.phone,
           amount: due.amountRupees.toDouble(),
           dueLabel: due.label,
           kind: due.kind,
@@ -466,6 +470,37 @@ class AppRepository extends ChangeNotifier {
     }
   }
 
+  Future<void> deleteCustomer(String customerId) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i >= 0) {
+      _customers.removeAt(i);
+      notifyListeners();
+    }
+    if (_firebaseReady && _firestore != null) {
+      try {
+        await _firestore!.collection('customers').doc(customerId).delete();
+        debugPrint('Firestore: deleted customers/$customerId');
+      } on FirebaseException catch (e, st) {
+        debugPrint(
+          'Firestore deleteCustomer failed: code=${e.code} message=${e.message}\n$st',
+        );
+        rethrow;
+      }
+    }
+  }
+
+  Future<void> approveCustomer(String customerId) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    if (c.adminApproved) return;
+    await updateCustomer(
+      c.copyWith(
+        adminApproved: true,
+      ),
+    );
+  }
+
   /// Marks [skippedDate] as skipped and extends [endDate] based on total skips.
   Future<void> skipDeliveryDate(
     String customerId,
@@ -520,7 +555,7 @@ class AppRepository extends ChangeNotifier {
     if (pStart == null) return;
 
     final due = paymentDueForCustomer(c, today);
-    if (due == null || due.kind != kind) return;
+    if (due == null || !collectionKindMatchesDue(kind, due.kind)) return;
 
     final dueNow = due.amountRupees;
     final amountCollected = collectedAmountRupees ?? dueNow;
@@ -557,9 +592,8 @@ class AppRepository extends ChangeNotifier {
           w = true;
           break;
         case PaymentCollectionKind.monthlyAdvance:
-          ma = true;
-          break;
         case PaymentCollectionKind.monthlyBalance:
+          ma = true;
           mb = true;
           break;
       }
@@ -622,6 +656,8 @@ class AppRepository extends ChangeNotifier {
         weeklyPeriodPaid: false,
         monthlyAdvancePaid: false,
         monthlyBalancePaid: false,
+        customerCreated: true,
+        adminApproved: true,
       ),
       Customer(
         id: '2',
@@ -639,6 +675,8 @@ class AppRepository extends ChangeNotifier {
         weeklyPeriodPaid: false,
         monthlyAdvancePaid: false,
         monthlyBalancePaid: false,
+        customerCreated: true,
+        adminApproved: true,
       ),
       Customer(
         id: '3',
@@ -655,6 +693,8 @@ class AppRepository extends ChangeNotifier {
         weeklyPeriodPaid: false,
         monthlyAdvancePaid: false,
         monthlyBalancePaid: false,
+        customerCreated: true,
+        adminApproved: true,
       ),
       Customer(
         id: '4',
@@ -672,6 +712,8 @@ class AppRepository extends ChangeNotifier {
         weeklyPeriodPaid: false,
         monthlyAdvancePaid: false,
         monthlyBalancePaid: false,
+        customerCreated: true,
+        adminApproved: true,
       ),
     ];
     _customers.addAll(sample);

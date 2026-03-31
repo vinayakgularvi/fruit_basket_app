@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app_navigator.dart';
 import '../data/app_repository.dart';
 import '../models/customer.dart';
 
@@ -10,8 +11,11 @@ void showPaymentRecordedWithUndo(
   AppRepository repo,
   Customer snapshotBefore,
 ) {
-  if (!context.mounted) return;
-  final messenger = ScaffoldMessenger.maybeOf(context);
+  final root = rootNavigatorContext;
+  final snackContext =
+      root != null && root.mounted ? root : context;
+  if (!snackContext.mounted) return;
+  final messenger = ScaffoldMessenger.maybeOf(snackContext);
   if (messenger == null) return;
   WidgetsBinding.instance.addPostFrameCallback((_) {
     messenger.hideCurrentSnackBar();

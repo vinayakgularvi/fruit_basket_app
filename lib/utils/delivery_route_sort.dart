@@ -13,31 +13,44 @@ void sortDeliveryCustomers(List<Customer> list, DeliveryListSort sort) {
 }
 
 /// Parses [requestedDeliveryTime] (e.g. "8–10 AM", "9:30 PM") for route order.
-/// Unparseable or empty sorts after known times; tie-break by name.
+/// Uses the **earliest** time token in the string (all preset windows use the
+/// start of the first range). Unparseable or empty sorts after known times.
 int requestedDeliveryTimeSortKey(String requestedDeliveryTime) {
-  final s = requestedDeliveryTime.trim().toLowerCase();
+  var s = requestedDeliveryTime.trim().toLowerCase();
   if (s.isEmpty) return 1 << 20;
 
-  final m = RegExp(r'(\d{1,2})\s*(?::(\d{2}))?').firstMatch(s);
-  if (m == null) return (1 << 20) - 1;
+  // UI presets use Unicode en-dash (–) between times.
+  s = s.replaceAll(RegExp(r'[–—]'), '-');
 
-  var hour = int.tryParse(m.group(1) ?? '') ?? 12;
-  var minute = int.tryParse(m.group(2) ?? '') ?? 0;
-  hour = hour.clamp(0, 23);
-  minute = minute.clamp(0, 59);
+  final rx = RegExp(r'(\d{1,2})\s*(?::(\d{2}))?');
+  var best = 24 * 60;
+  var found = false;
+  for (final m in rx.allMatches(s)) {
+    found = true;
+    var hour = int.tryParse(m.group(1) ?? '') ?? 12;
+    var minute = int.tryParse(m.group(2) ?? '') ?? 0;
+    hour = hour.clamp(0, 23);
+    minute = minute.clamp(0, 59);
 
-  final isPm = s.contains('pm');
-  final isAm = s.contains('am');
-  if (isPm && hour < 12) hour += 12;
-  if (isAm && hour == 12) hour = 0;
+    final after = m.end < s.length ? s.substring(m.end) : '';
+    final chunk = after.length > 14 ? after.substring(0, 14) : after;
+    final isPm = chunk.contains('pm');
+    final isAm = chunk.contains('am');
+    if (isPm && hour < 12) hour += 12;
+    if (isAm && hour == 12) hour = 0;
 
-  if (!isPm && !isAm) {
-    if (hour >= 1 && hour <= 11) {
-      if (s.contains('evening') || s.contains('night')) hour += 12;
+    if (!isPm && !isAm) {
+      if (hour >= 1 && hour <= 11) {
+        if (s.contains('evening') || s.contains('night')) hour += 12;
+      }
     }
+
+    final mins = hour * 60 + minute;
+    if (mins < best) best = mins;
   }
 
-  return hour * 60 + minute;
+  if (!found) return (1 << 20) - 1;
+  return best;
 }
 
 int compareCustomersByRequestedTime(Customer a, Customer b) {

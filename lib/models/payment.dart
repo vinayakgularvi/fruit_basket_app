@@ -12,6 +12,7 @@ class Payment {
     required this.id,
     required this.customerId,
     required this.customerName,
+    this.phone = '',
     required this.amount,
     required this.dueLabel,
     this.kind,
@@ -21,6 +22,7 @@ class Payment {
   final String id;
   final String customerId;
   final String customerName;
+  final String phone;
   final double amount;
   final String dueLabel;
   /// Set when derived from [paymentDueForCustomer].

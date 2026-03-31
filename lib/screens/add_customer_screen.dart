@@ -6,8 +6,10 @@ import 'package:provider/provider.dart';
 import '../data/app_repository.dart';
 import '../models/customer.dart';
 import '../models/delivery_slot.dart';
+import '../models/payment.dart';
 import '../models/subscription_plan.dart';
 import '../utils/delivery_plan_dates.dart';
+import '../utils/payment_schedule.dart';
 
 /// 15-minute windows for “Requested time of delivery” (morning route).
 const _morningDeliveryWindows = <String>[
@@ -65,29 +67,11 @@ String? _validatePhone(String? v) {
 
 String? _validateDeliveryLocation(String? v) {
   final t = v?.trim() ?? '';
-  if (t.isEmpty) {
-    return 'Paste a Google Maps link (Share → Copy link)';
-  }
-  if (t.length < 15) {
-    return 'Link or description is too short';
-  }
-  if (!_containsGoogleMapsLink(t)) {
-    return 'Include a Google Maps link (maps.google.com, maps.app.goo.gl, goo.gl/maps, …)';
-  }
+  if (t.isEmpty) return null;
   if (t.length > 2000) {
     return 'Text is too long (max 2000 characters)';
   }
   return null;
-}
-
-bool _containsGoogleMapsLink(String text) {
-  final lower = text.toLowerCase();
-  if (lower.contains('maps.app.goo.gl')) return true;
-  if (lower.contains('goo.gl/maps')) return true;
-  if (lower.contains('g.co/maps')) return true;
-  if (lower.contains('google.') && lower.contains('/maps')) return true;
-  if (lower.contains('google.') && lower.contains('maps')) return true;
-  return false;
 }
 
 String? _validateNotes(String? v) {
@@ -104,6 +88,15 @@ String? _validateRequestedTimeCustom(String? v) {
   return null;
 }
 
+String? _validateOptionalPaymentAmount(String? v) {
+  final t = v?.trim() ?? '';
+  if (t.isEmpty) return null;
+  final n = int.tryParse(t);
+  if (n == null) return 'Enter a valid amount';
+  if (n < 0) return 'Amount cannot be negative';
+  return null;
+}
+
 class AddCustomerScreen extends StatefulWidget {
   const AddCustomerScreen({super.key, this.existing});
 
@@ -114,6 +107,12 @@ class AddCustomerScreen extends StatefulWidget {
   State<AddCustomerScreen> createState() => _AddCustomerScreenState();
 }
 
+enum _InitialPaymentOption {
+  fullPayment,
+  weeklyFull,
+  monthlyFull,
+}
+
 class _AddCustomerScreenState extends State<AddCustomerScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
@@ -121,6 +120,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   final _address = TextEditingController();
   final _notes = TextEditingController();
   final _deliveryTimeCustom = TextEditingController();
+  final _initialPaymentAmount = TextEditingController();
   DeliverySlot _slot = DeliverySlot.morning;
 
   String _deliveryTimePreset = '';
@@ -129,6 +129,9 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   PlanTier _planTier = PlanTier.basic;
   late DateTime _startDate;
   bool _active = true;
+  bool _addInitialPayment = false;
+  _InitialPaymentOption _initialPaymentOption =
+      _InitialPaymentOption.fullPayment;
 
   final _dateFmt = DateFormat.yMMMd();
   String? _assignedDeliveryAgentUsername;
@@ -200,8 +203,33 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     _phone.dispose();
     _address.dispose();
     _deliveryTimeCustom.dispose();
+    _initialPaymentAmount.dispose();
     _notes.dispose();
     super.dispose();
+  }
+
+  List<_InitialPaymentOption> get _allowedInitialPaymentOptions {
+    if (_billingPeriod == BillingPeriod.weekly) {
+      return const [
+        _InitialPaymentOption.fullPayment,
+        _InitialPaymentOption.weeklyFull,
+      ];
+    }
+    return const [
+      _InitialPaymentOption.fullPayment,
+      _InitialPaymentOption.monthlyFull,
+    ];
+  }
+
+  String _paymentOptionLabel(_InitialPaymentOption option) {
+    switch (option) {
+      case _InitialPaymentOption.fullPayment:
+        return 'Full payment';
+      case _InitialPaymentOption.weeklyFull:
+        return 'Weekly plan only';
+      case _InitialPaymentOption.monthlyFull:
+        return 'Monthly plan only';
+    }
   }
 
   Future<void> _pickStartDate() async {
@@ -232,7 +260,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     final editing = widget.existing;
     final id =
         editing?.id ?? DateTime.now().microsecondsSinceEpoch.toString();
-    final customer = Customer(
+    var customer = Customer(
       id: id,
       name: _name.text.trim(),
       phone: _phone.text.trim(),
@@ -258,7 +286,90 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       lastPaymentKind: editing?.lastPaymentKind,
       pendingDueKind: editing?.pendingDueKind,
       pendingDueRemainingRupees: editing?.pendingDueRemainingRupees,
+      customerCreated: editing?.customerCreated ?? true,
+      adminApproved: editing?.adminApproved ?? false,
     );
+
+    final initialAmtText = _initialPaymentAmount.text.trim();
+    final initialAmt = int.tryParse(initialAmtText);
+    if (_addInitialPayment && initialAmt != null && initialAmt >= 0) {
+      var weeklyPaid = customer.weeklyPeriodPaid;
+      var monthlyAdvancePaid = customer.monthlyAdvancePaid;
+      var monthlyBalancePaid = customer.monthlyBalancePaid;
+      String? pendingDueKind = customer.pendingDueKind;
+      int? pendingDueRemaining = customer.pendingDueRemainingRupees;
+      var clearPendingDue = false;
+      String lastPaymentKind = '';
+
+      if (_initialPaymentOption == _InitialPaymentOption.fullPayment) {
+        final fullDue = customer.planPriceRupees;
+        final fullPay = initialAmt >= fullDue;
+        lastPaymentKind = 'full_payment';
+        clearPendingDue = fullPay;
+
+        if (customer.billingPeriod == BillingPeriod.weekly) {
+          weeklyPaid = fullPay;
+          if (!fullPay) {
+            pendingDueKind = PaymentCollectionKind.weeklyFull.name;
+            pendingDueRemaining = fullDue - initialAmt;
+          }
+        } else {
+          final fullDue = customer.planPriceRupees;
+          if (fullPay) {
+            monthlyAdvancePaid = true;
+            monthlyBalancePaid = true;
+          } else {
+            monthlyAdvancePaid = false;
+            monthlyBalancePaid = false;
+            pendingDueKind = PaymentCollectionKind.monthlyAdvance.name;
+            pendingDueRemaining = fullDue - initialAmt;
+          }
+        }
+      } else {
+        final kind = switch (_initialPaymentOption) {
+          _InitialPaymentOption.weeklyFull => PaymentCollectionKind.weeklyFull,
+          _InitialPaymentOption.monthlyFull =>
+            PaymentCollectionKind.monthlyAdvance,
+          _InitialPaymentOption.fullPayment => PaymentCollectionKind.weeklyFull,
+        };
+        final scheduledDue = scheduledAmountForKind(customer, kind);
+        final fullPay = initialAmt >= scheduledDue;
+        lastPaymentKind = kind.name;
+        clearPendingDue = fullPay;
+
+        if (kind == PaymentCollectionKind.weeklyFull) {
+          weeklyPaid = fullPay;
+          if (!fullPay) {
+            pendingDueKind = kind.name;
+            pendingDueRemaining = scheduledDue - initialAmt;
+          }
+        } else {
+          if (fullPay) {
+            monthlyAdvancePaid = true;
+            monthlyBalancePaid = true;
+          } else {
+            monthlyAdvancePaid = false;
+            monthlyBalancePaid = false;
+            pendingDueKind = kind.name;
+            pendingDueRemaining = scheduledDue - initialAmt;
+          }
+        }
+      }
+
+      customer = customer.copyWith(
+        paymentTrackedPeriodStart: dateOnly(_startDate),
+        weeklyPeriodPaid: weeklyPaid,
+        monthlyAdvancePaid: monthlyAdvancePaid,
+        monthlyBalancePaid: monthlyBalancePaid,
+        lastPaymentAmountRupees: initialAmt,
+        lastPaymentAt: DateTime.now(),
+        lastPaymentKind: lastPaymentKind,
+        clearPendingDue: clearPendingDue,
+        pendingDueKind: clearPendingDue ? null : pendingDueKind,
+        pendingDueRemainingRupees: clearPendingDue ? null : pendingDueRemaining,
+      );
+    }
+
     if (editing != null) {
       await repo.updateCustomer(customer);
     } else {
@@ -332,7 +443,14 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               ],
               selected: {_billingPeriod},
               onSelectionChanged: (s) {
-                setState(() => _billingPeriod = s.first);
+                final next = s.first;
+                setState(() {
+                  _billingPeriod = next;
+                  final allowed = _allowedInitialPaymentOptions;
+                  if (!allowed.contains(_initialPaymentOption)) {
+                    _initialPaymentOption = allowed.first;
+                  }
+                });
               },
             ),
             const SizedBox(height: 4),
@@ -534,22 +652,68 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               maxLines: 4,
               maxLength: 2000,
               decoration: const InputDecoration(
-                labelText: 'Delivery location',
-                hintText: 'Paste Google Maps link (Share → Copy link)',
-                prefixIcon: Icon(Icons.link),
+                labelText: 'Delivery location (optional)',
+                hintText: 'Google Maps link, address, or landmark',
+                prefixIcon: Icon(Icons.place_outlined),
                 alignLabelWithHint: true,
               ),
               validator: _validateDeliveryLocation,
             ),
             const SizedBox(height: 8),
             Text(
-              'Open Google Maps → find the pin → Share → Copy link, then paste here. '
-              'You can add a landmark on the next line in the same box.',
+              'Leave blank if unknown. For route distance on the delivery screen, '
+              'a Google Maps share link in this field works best.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: cs.onSurfaceVariant,
                   ),
             ),
             const SizedBox(height: 16),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Add initial payment'),
+              subtitle: const Text('Optional: record collected amount now'),
+              value: _addInitialPayment,
+              onChanged: (v) => setState(() => _addInitialPayment = v),
+            ),
+            if (_addInitialPayment) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<_InitialPaymentOption>(
+                initialValue: _allowedInitialPaymentOptions
+                        .contains(_initialPaymentOption)
+                    ? _initialPaymentOption
+                    : _allowedInitialPaymentOptions.first,
+                decoration: const InputDecoration(
+                  labelText: 'Payment type',
+                ),
+                items: _allowedInitialPaymentOptions
+                    .map(
+                      (k) => DropdownMenuItem<_InitialPaymentOption>(
+                        value: k,
+                        child: Text(_paymentOptionLabel(k)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() => _initialPaymentOption = v);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _initialPaymentAmount,
+                keyboardType: TextInputType.number,
+                maxLength: 8,
+                decoration: const InputDecoration(
+                  labelText: 'Collected amount (optional)',
+                  hintText: 'e.g. 500',
+                  prefixText: '₹ ',
+                  counterText: '',
+                ),
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                validator: _validateOptionalPaymentAmount,
+              ),
+              const SizedBox(height: 16),
+            ],
             TextFormField(
               controller: _notes,
               maxLines: 3,

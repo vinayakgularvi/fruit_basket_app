@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../models/customer.dart';
+import 'delivery_route_sort.dart';
 import 'maps_links.dart';
 
 /// Geographic point in WGS84 (degrees).
@@ -100,8 +101,85 @@ class OptimizedRouteResult {
   final List<double?> kmFromPrevious;
 }
 
-/// Nearest-neighbor order from [start] for stops that have map coordinates;
-/// remaining stops (no pin in address) are appended alphabetically.
+double _openPathLength(LatLng start, List<LatLng> pts) {
+  if (pts.isEmpty) return 0;
+  var t = haversineKm(start, pts.first);
+  for (var i = 0; i < pts.length - 1; i++) {
+    t += haversineKm(pts[i], pts[i + 1]);
+  }
+  return t;
+}
+
+void _reverseRange<T>(List<T> list, int i, int j) {
+  while (i < j) {
+    final x = list[i];
+    list[i] = list[j];
+    list[j] = x;
+    i++;
+    j--;
+  }
+}
+
+/// Reduces total straight-line distance along the open path [start]→[pts][0]→…
+/// by 2-opt reversals (good enough for small ~dozens of stops).
+void _twoOptOpenPath(LatLng start, List<Customer> customers, List<LatLng> pts) {
+  final n = pts.length;
+  if (n < 3) return;
+  assert(customers.length == n);
+  var improved = true;
+  while (improved) {
+    improved = false;
+    outer:
+    for (var i = 0; i < n; i++) {
+      for (var j = i + 2; j < n; j++) {
+        final trialC = List<Customer>.from(customers);
+        final trialP = List<LatLng>.from(pts);
+        _reverseRange(trialC, i, j);
+        _reverseRange(trialP, i, j);
+        if (_openPathLength(start, trialP) <
+            _openPathLength(start, pts) - 1e-9) {
+          customers.setAll(0, trialC);
+          pts.setAll(0, trialP);
+          improved = true;
+          break outer;
+        }
+      }
+    }
+  }
+}
+
+int _nearestNeighborPickIndex(
+  LatLng current,
+  List<({Customer c, LatLng p})> remaining,
+) {
+  var bestI = 0;
+  var bestD = double.infinity;
+  for (var i = 0; i < remaining.length; i++) {
+    final d = haversineKm(current, remaining[i].p);
+    final tie = (d - bestD).abs() < 1e-9;
+    final better =
+        d < bestD - 1e-9 || (tie && remaining[i].c.name.compareTo(remaining[bestI].c.name) < 0);
+    if (better) {
+      bestD = d;
+      bestI = i;
+    }
+  }
+  return bestI;
+}
+
+List<double?> _legsFromPath(LatLng start, List<LatLng> pts) {
+  if (pts.isEmpty) return [];
+  final legs = <double?>[];
+  var cur = start;
+  for (final p in pts) {
+    legs.add(haversineKm(cur, p));
+    cur = p;
+  }
+  return legs;
+}
+
+/// Shortest travel: nearest-neighbor from depot, then 2-opt. Stops without
+/// coordinates go last (by name).
 OptimizedRouteResult optimizeDeliveryRoute(
   List<Customer> stops,
   LatLng start,
@@ -122,27 +200,90 @@ OptimizedRouteResult optimizeDeliveryRoute(
   }
   without.sort((a, b) => a.name.compareTo(b.name));
 
-  final ordered = <Customer>[];
-  final legs = <double?>[];
-  var current = start;
   final remaining = List<({Customer c, LatLng p})>.from(withCoords);
+  final ordered = <Customer>[];
+  final orderedPts = <LatLng>[];
+  var current = start;
 
   while (remaining.isNotEmpty) {
-    var bestI = 0;
-    var bestD = double.infinity;
-    for (var i = 0; i < remaining.length; i++) {
-      final d = haversineKm(current, remaining[i].p);
-      if (d < bestD) {
-        bestD = d;
-        bestI = i;
-      }
-    }
+    final bestI = _nearestNeighborPickIndex(current, remaining);
     final pick = remaining.removeAt(bestI);
-    legs.add(bestD);
     ordered.add(pick.c);
+    orderedPts.add(pick.p);
     current = pick.p;
   }
 
+  _twoOptOpenPath(start, ordered, orderedPts);
+
+  final legs = _legsFromPath(start, orderedPts);
+  for (final c in without) {
+    legs.add(null);
+    ordered.add(c);
+  }
+
+  return OptimizedRouteResult(customers: ordered, kmFromPrevious: legs);
+}
+
+/// Respects **requested time order** (earlier windows first). Inside each
+/// identical time-sort bucket, uses nearest-neighbor from the last stop to
+/// shorten backtracking. Stops without coordinates follow, sorted by time
+/// then name.
+OptimizedRouteResult optimizeDeliveryRouteByRequestedTime(
+  List<Customer> stops,
+  LatLng start,
+) {
+  if (stops.isEmpty) {
+    return const OptimizedRouteResult(customers: [], kmFromPrevious: []);
+  }
+
+  final withCoords = <({Customer c, LatLng p})>[];
+  final without = <Customer>[];
+  for (final c in stops) {
+    final p = latLngFromCustomerAddress(c.address);
+    if (p != null) {
+      withCoords.add((c: c, p: p));
+    } else {
+      without.add(c);
+    }
+  }
+
+  withCoords.sort((a, b) {
+    final t = compareCustomersByRequestedTime(a.c, b.c);
+    if (t != 0) return t;
+    return a.c.name.compareTo(b.c.name);
+  });
+
+  final ordered = <Customer>[];
+  final orderedPts = <LatLng>[];
+  var current = start;
+  final bucket = <({Customer c, LatLng p})>[];
+
+  void flushBucket() {
+    if (bucket.isEmpty) return;
+    final rem = List<({Customer c, LatLng p})>.from(bucket);
+    bucket.clear();
+    while (rem.isNotEmpty) {
+      final bestI = _nearestNeighborPickIndex(current, rem);
+      final pick = rem.removeAt(bestI);
+      ordered.add(pick.c);
+      orderedPts.add(pick.p);
+      current = pick.p;
+    }
+  }
+
+  int? lastKey;
+  for (final pair in withCoords) {
+    final k = requestedDeliveryTimeSortKey(pair.c.requestedDeliveryTime);
+    if (lastKey != null && k != lastKey) {
+      flushBucket();
+    }
+    lastKey = k;
+    bucket.add(pair);
+  }
+  flushBucket();
+
+  without.sort(compareCustomersByRequestedTime);
+  final legs = _legsFromPath(start, orderedPts);
   for (final c in without) {
     legs.add(null);
     ordered.add(c);

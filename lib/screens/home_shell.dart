@@ -23,14 +23,14 @@ class _HomeShellState extends State<HomeShell> {
     final deliveryOnly = repo.isDeliveryAgent;
     final screens = deliveryOnly
         ? const [
-            DashboardScreen(),
-            DeliveryScreen(),
+            DashboardScreen(key: ValueKey('shell_dash')),
+            DeliveryScreen(key: ValueKey('shell_delivery_agent')),
           ]
         : const [
-            DashboardScreen(),
-            CustomersScreen(),
-            DeliveryScreen(),
-            PaymentsScreen(),
+            DashboardScreen(key: ValueKey('shell_dash')),
+            CustomersScreen(key: ValueKey('shell_customers')),
+            DeliveryScreen(key: ValueKey('shell_delivery')),
+            PaymentsScreen(key: ValueKey('shell_payments')),
           ];
     final nav = deliveryOnly
         ? const [

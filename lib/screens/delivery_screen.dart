@@ -4,15 +4,10 @@ import 'package:provider/provider.dart';
 import '../data/app_repository.dart';
 import '../models/customer.dart';
 import '../models/delivery_slot.dart';
-import '../models/payment.dart' show PaymentCollectionKind;
-import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_optimizer.dart';
 import '../utils/delivery_route_sort.dart';
 import '../utils/maps_links.dart';
-import '../utils/payment_schedule.dart';
 import '../utils/phone_launch.dart';
-import '../widgets/collected_amount_dialog.dart';
-import '../widgets/payment_undo_snackbar.dart';
 
 class DeliveryScreen extends StatefulWidget {
   const DeliveryScreen({super.key});
@@ -23,11 +18,11 @@ class DeliveryScreen extends StatefulWidget {
 
 class _DeliveryScreenState extends State<DeliveryScreen> {
   DeliverySlot _slot = DeliverySlot.morning;
-  DeliveryListSort _sort = DeliveryListSort.byOptimizedRoute;
+  DeliveryListSort _sort = DeliveryListSort.byRequestedTime;
 
-  /// Depot / vehicle start (WGS84). Default: central Home — tap edit when Route sort is on.
-double _routeStartLat = 13.36139;
-double _routeStartLng = 77.11169;
+  /// Depot / vehicle start (WGS84). Used for distance sort and leg distances.
+  double _routeStartLat = 13.36139;
+  double _routeStartLng = 77.11169;
 
   String _addressWithoutUrls(String raw) {
     final noUrls = raw.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
@@ -106,35 +101,26 @@ double _routeStartLng = 77.11169;
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final base = repo.customersInDeliverySlot(_slot);
-    final List<Customer> list;
-    final List<double?>? routeKm;
-    if (_sort == DeliveryListSort.byOptimizedRoute) {
-      final opt = optimizeDeliveryRoute(
-        base,
-        LatLng(_routeStartLat, _routeStartLng),
-      );
-      list = opt.customers;
-      routeKm = opt.kmFromPrevious;
-    } else {
-      list = List<Customer>.from(base);
-      sortDeliveryCustomers(list, _sort);
-      routeKm = null;
-    }
+    final start = LatLng(_routeStartLat, _routeStartLng);
+    final OptimizedRouteResult opt = _sort == DeliveryListSort.byOptimizedRoute
+        ? optimizeDeliveryRoute(base, start)
+        : optimizeDeliveryRouteByRequestedTime(base, start);
+    final list = opt.customers;
+    final routeKm = opt.kmFromPrevious;
     final done = repo.completedCountForSlot(_slot);
     final cs = Theme.of(context).colorScheme;
     final routeTotalKm =
-        routeKm?.whereType<double>().fold(0.0, (a, b) => a + b);
+        routeKm.whereType<double>().fold(0.0, (a, b) => a + b);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Today’s route'),
         actions: [
-          if (_sort == DeliveryListSort.byOptimizedRoute)
-            IconButton(
-              tooltip: 'Set route start',
-              icon: const Icon(Icons.edit_location_alt_outlined),
-              onPressed: () => _editRouteStart(context),
-            ),
+          IconButton(
+            tooltip: 'Set route start (depot)',
+            icon: const Icon(Icons.edit_location_alt_outlined),
+            onPressed: list.isEmpty ? null : () => _editRouteStart(context),
+          ),
           TextButton(
             onPressed: list.isEmpty
                 ? null
@@ -184,12 +170,12 @@ double _routeStartLng = 77.11169;
               segments: const [
                 ButtonSegment(
                   value: DeliveryListSort.byOptimizedRoute,
-                  label: Text('Route'),
+                  label: Text('Shortest'),
                   icon: Icon(Icons.route_outlined),
                 ),
                 ButtonSegment(
                   value: DeliveryListSort.byRequestedTime,
-                  label: Text('Time'),
+                  label: Text('By time'),
                   icon: Icon(Icons.schedule_outlined),
                 ),
               ],
@@ -199,7 +185,7 @@ double _routeStartLng = 77.11169;
               },
             ),
           ),
-          if (_sort == DeliveryListSort.byOptimizedRoute)
+          if (list.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
               child: Material(
@@ -227,7 +213,9 @@ double _routeStartLng = 77.11169;
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Nearest-neighbor from depot · straight-line km · pins from Maps links in addresses',
+                                _sort == DeliveryListSort.byOptimizedRoute
+                                    ? 'Minimize driving: nearest-neighbor from depot, then 2-opt. Straight-line km; add Maps pin links in addresses.'
+                                    : 'Respect requested time (earlier windows first); shortest path within each time window. Same km rules.',
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodySmall
@@ -253,7 +241,7 @@ double _routeStartLng = 77.11169;
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
             child: Text(
-              routeTotalKm == null
+              routeTotalKm == 0
                   ? '$done / ${list.length} completed · ${_slot.label}'
                   : '$done / ${list.length} completed · ${_slot.label} · '
                       '${routeTotalKm.toStringAsFixed(1)} km (mapped legs)',
@@ -295,18 +283,7 @@ double _routeStartLng = 77.11169;
                       final Customer c = list[i];
                       final checked = repo.isDeliveryChecked(c.id);
                       final hasMapsLink = mapsUriFromAddress(c.address) != null;
-                      final day = dateOnly(DateTime.now());
-                      final due = paymentDueForCustomer(c, day);
-                      final dueNextDayRaw =
-                          paymentDueForNextCalendarDay(c, day);
-                      final dueNextDay = dueNextDayRaw?.kind ==
-                              PaymentCollectionKind.monthlyAdvance
-                          ? null
-                          : dueNextDayRaw;
-                      final legKm =
-                          routeKm != null && i < routeKm.length
-                              ? routeKm[i]
-                              : null;
+                      final legKm = i < routeKm.length ? routeKm[i] : null;
 
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -327,21 +304,19 @@ double _routeStartLng = 77.11169;
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    if (routeKm != null) ...[
-                                      Text(
-                                        legKm != null
-                                            ? 'Stop ${i + 1} · ${legKm.toStringAsFixed(1)} km ${i == 0 ? 'from depot' : 'from previous stop'}'
-                                            : 'Stop ${i + 1} · no map pin in address (straight-line distance N/A)',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall
-                                            ?.copyWith(
-                                              color: cs.tertiary,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                    ],
+                                    Text(
+                                      legKm != null
+                                          ? 'Stop ${i + 1} · ${legKm.toStringAsFixed(1)} km ${i == 0 ? 'from depot' : 'from previous stop'}'
+                                          : 'Stop ${i + 1} · no map pin in address (straight-line distance N/A)',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(
+                                            color: cs.tertiary,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                    ),
+                                    const SizedBox(height: 4),
                                     Text(
                                       c.name,
                                       style: Theme.of(context)
@@ -411,149 +386,6 @@ double _routeStartLng = 77.11169;
                                               color: cs.tertiary,
                                               fontWeight: FontWeight.w600,
                                             ),
-                                      ),
-                                    ],
-                                    if (due != null) ...[
-                                      const SizedBox(height: 10),
-                                      Material(
-                                        color: cs.errorContainer
-                                            .withValues(alpha: 0.45),
-                                        borderRadius: BorderRadius.circular(10),
-                                        child: Padding(
-                                          padding: const EdgeInsets.fromLTRB(
-                                            10,
-                                            8,
-                                            10,
-                                            8,
-                                          ),
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.stretch,
-                                            children: [
-                                              Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Icon(
-                                                    Icons.payments_outlined,
-                                                    size: 20,
-                                                    color: cs.error,
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Expanded(
-                                                    child: Text(
-                                                      'Collect ₹${due.amountRupees} · ${due.label}',
-                                                      style: Theme.of(context)
-                                                          .textTheme
-                                                          .bodySmall
-                                                          ?.copyWith(
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .w600,
-                                                            color: cs
-                                                                .onErrorContainer,
-                                                          ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              if (dueNextDay != null) ...[
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  'Next day: ₹${dueNextDay.amountRupees} · ${dueNextDay.label}',
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .labelSmall
-                                                      ?.copyWith(
-                                                        color: cs
-                                                            .onErrorContainer
-                                                            .withValues(
-                                                                  alpha: 0.9,
-                                                                ),
-                                                      ),
-                                                ),
-                                              ],
-                                              const SizedBox(height: 8),
-                                              FilledButton.tonal(
-                                                onPressed: () async {
-                                                  final before = c;
-                                                  final amount =
-                                                      await showCollectedAmountDialog(
-                                                    context,
-                                                    suggestedRupees:
-                                                        due.amountRupees,
-                                                    title:
-                                                        'Collected — ${c.name}',
-                                                  );
-                                                  if (!context.mounted ||
-                                                      amount == null) {
-                                                    return;
-                                                  }
-                                                  await repo
-                                                      .recordPaymentCollection(
-                                                    c.id,
-                                                    due.kind,
-                                                    collectedAmountRupees:
-                                                        amount,
-                                                  );
-                                                  if (!context.mounted) {
-                                                    return;
-                                                  }
-                                                  showPaymentRecordedWithUndo(
-                                                    context,
-                                                    repo,
-                                                    before,
-                                                  );
-                                                },
-                                                child: const Text(
-                                                  'Mark payment collected',
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                    if (due == null && dueNextDay != null) ...[
-                                      const SizedBox(height: 10),
-                                      Material(
-                                        color: cs.secondaryContainer
-                                            .withValues(alpha: 0.55),
-                                        borderRadius: BorderRadius.circular(10),
-                                        child: Padding(
-                                          padding: const EdgeInsets.fromLTRB(
-                                            10,
-                                            8,
-                                            10,
-                                            8,
-                                          ),
-                                          child: Row(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Icon(
-                                                Icons.schedule_outlined,
-                                                size: 20,
-                                                color: cs.secondary,
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  'Tomorrow: collect ₹${dueNextDay.amountRupees} · ${dueNextDay.label}',
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodySmall
-                                                      ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: cs
-                                                            .onSecondaryContainer,
-                                                      ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
                                       ),
                                     ],
                                     if (hasMapsLink) ...[

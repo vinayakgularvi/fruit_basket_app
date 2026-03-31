@@ -136,6 +136,12 @@ class DashboardScreen extends StatelessWidget {
                         subtitle: 'on subscription',
                       ),
                       _StatCard(
+                        icon: Icons.person_add_alt_1,
+                        label: 'New customers created',
+                        value: '${repo.newCustomersPendingApprovalCount}',
+                        subtitle: 'awaiting admin approval',
+                      ),
+                      _StatCard(
                         icon: Icons.currency_rupee,
                         label: 'Subscription revenue',
                         value: currency.format(repo.monthlyRevenueEstimate),

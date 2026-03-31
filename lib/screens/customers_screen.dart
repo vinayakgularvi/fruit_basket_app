@@ -8,8 +8,16 @@ import '../models/customer.dart';
 import '../models/delivery_slot.dart';
 import '../models/subscription_plan.dart';
 import 'add_customer_screen.dart';
+import '../widgets/manual_receipt_dialog.dart';
 
-enum _CustomerFilter { all, morning, evening, activeOnly, inactiveOnly }
+enum _CustomerFilter {
+  all,
+  morning,
+  evening,
+  activeOnly,
+  inactiveOnly,
+  createdPendingApproval,
+}
 
 class CustomersScreen extends StatefulWidget {
   const CustomersScreen({super.key});
@@ -43,6 +51,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
             c.address.toLowerCase().contains(q);
       }).toList();
     }
+    final hideInactiveByDefault = f == _CustomerFilter.all ||
+        f == _CustomerFilter.morning ||
+        f == _CustomerFilter.evening;
+    if (hideInactiveByDefault) {
+      list = list.where((c) => c.active).toList();
+    }
+
     switch (f) {
       case _CustomerFilter.all:
         break;
@@ -59,6 +74,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
         break;
       case _CustomerFilter.inactiveOnly:
         list = list.where((c) => !c.active).toList();
+        break;
+      case _CustomerFilter.createdPendingApproval:
+        list = list
+            .where((c) => c.customerCreated && !c.adminApproved)
+            .toList();
         break;
     }
     list.sort((a, b) => a.name.compareTo(b.name));
@@ -138,6 +158,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   selected: _filter == _CustomerFilter.inactiveOnly,
                   onSelected: () =>
                       setState(() => _filter = _CustomerFilter.inactiveOnly),
+                ),
+                _FilterChip(
+                  label: 'Customer created',
+                  selected: _filter == _CustomerFilter.createdPendingApproval,
+                  onSelected: () => setState(
+                    () => _filter = _CustomerFilter.createdPendingApproval,
+                  ),
                 ),
               ],
             ),
@@ -335,9 +362,87 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                             ?.copyWith(color: cs.error),
                                       ),
                                     ],
+                                    if (c.customerCreated && !c.adminApproved) ...[
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Awaiting admin approval',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: cs.tertiary,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
+                              IconButton(
+                                icon: const Icon(Icons.receipt_long_outlined),
+                                tooltip: 'Generate receipt',
+                                onPressed: () async {
+                                  await showManualReceiptDialog(
+                                    context: context,
+                                    customer: c,
+                                    repo: repo,
+                                  );
+                                },
+                              ),
+                              if (repo.isAdmin && c.customerCreated && !c.adminApproved)
+                                IconButton(
+                                  icon: const Icon(Icons.verified_outlined),
+                                  tooltip: 'Approve customer',
+                                  onPressed: () async {
+                                    await repo.approveCustomer(c.id);
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '${c.name} approved by admin.',
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              if (repo.isAdmin && c.customerCreated && !c.adminApproved)
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  tooltip: 'Delete created customer',
+                                  onPressed: () async {
+                                    final shouldDelete = await showDialog<bool>(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Delete customer'),
+                                        content: Text(
+                                          'Delete "${c.name}"? This cannot be undone.',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(true),
+                                            child: const Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (shouldDelete != true) return;
+                                    await repo.deleteCustomer(c.id);
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '${c.name} deleted.',
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                               IconButton(
                                 icon: const Icon(Icons.event_busy_outlined),
                                 tooltip: 'Select skipped date',

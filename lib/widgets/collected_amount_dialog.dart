@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../app_navigator.dart';
+
 /// Confirms how many rupees were collected (defaults to [suggestedRupees]).
 /// Returns null if cancelled.
 Future<int?> showCollectedAmountDialog(
@@ -9,8 +11,12 @@ Future<int?> showCollectedAmountDialog(
   String title = 'Amount collected',
 }) {
   final controller = TextEditingController(text: '$suggestedRupees');
+  final root = rootNavigatorContext;
+  final dialogContext =
+      root != null && root.mounted ? root : context;
   return showDialog<int>(
-    context: context,
+    context: dialogContext,
+    useRootNavigator: true,
     builder: (ctx) {
       return AlertDialog(
         title: Text(title),
