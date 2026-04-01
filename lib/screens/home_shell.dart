@@ -21,10 +21,13 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
+    // Delivery agents get a lighter shell (no Customers / Payments) but still
+    // need Leads — same Firestore listeners as admins.
     final deliveryOnly = repo.isDeliveryAgent;
     final screens = deliveryOnly
         ? const [
             DashboardScreen(key: ValueKey('shell_dash')),
+            LeadsScreen(key: ValueKey('shell_leads_agent')),
             DeliveryScreen(key: ValueKey('shell_delivery_agent')),
           ]
         : const [
@@ -40,6 +43,11 @@ class _HomeShellState extends State<HomeShell> {
               icon: Icon(Icons.dashboard_outlined),
               selectedIcon: Icon(Icons.dashboard),
               label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.inbox_outlined),
+              selectedIcon: Icon(Icons.inbox),
+              label: 'Leads',
             ),
             NavigationDestination(
               icon: Icon(Icons.local_shipping_outlined),
