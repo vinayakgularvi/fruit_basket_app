@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
 import '../models/customer.dart';
+import '../models/lead.dart';
 import '../models/delivery_slot.dart';
 import '../models/payment.dart' show Payment, PaymentCollectionKind;
 import '../models/subscription_plan.dart';
@@ -14,6 +15,7 @@ import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_sort.dart';
 import '../utils/payment_schedule.dart';
 import 'customer_firestore.dart';
+import 'leads_firestore.dart';
 
 class AppRepository extends ChangeNotifier {
   AppRepository();
@@ -23,8 +25,17 @@ class AppRepository extends ChangeNotifier {
   static const _kSessionRole = 'session_role';
 
   final List<Customer> _customers = [];
+  final List<Lead> _leads = [];
   final Map<String, bool> _deliveryDoneToday = {};
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _customerSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsRootSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsGroupSub;
+  QuerySnapshot<Map<String, dynamic>>? _lastLeadsRootSnap;
+  QuerySnapshot<Map<String, dynamic>>? _lastLeadsGroupSnap;
+  final StreamController<List<Lead>> _newLeadsController =
+      StreamController<List<Lead>>.broadcast();
+  Set<String> _leadIdsAtLastMerge = {};
+  bool _leadsInitialSnapshotDone = false;
   FirebaseFirestore? _firestore;
   bool _firebaseReady = false;
   bool _isLoggedIn = false;
@@ -34,6 +45,7 @@ class AppRepository extends ChangeNotifier {
   List<String> _deliveryAgentUsernames = const [];
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
+  bool _leadsReady = true;
 
   bool get usesFirestore => _firebaseReady;
   bool get isLoggedIn => _isLoggedIn;
@@ -47,6 +59,14 @@ class AppRepository extends ChangeNotifier {
 
   /// True while Firestore is connected but the first `customers` snapshot has not arrived yet.
   bool get customersLoading => usesFirestore && !_customersReady;
+
+  /// True while Firestore is connected but the first `leads` snapshot has not arrived yet.
+  bool get leadsLoading => usesFirestore && !_leadsReady;
+
+  List<Lead> get leads => List.unmodifiable(_leads);
+
+  /// Fires when new lead document(s) appear after the first snapshot (not on initial load).
+  Stream<List<Lead>> get newLeads => _newLeadsController.stream;
 
   List<Customer> get customers => List.unmodifiable(_customers);
 
@@ -207,11 +227,46 @@ class AppRepository extends ChangeNotifier {
               notifyListeners();
             },
           );
+      _leadsReady = false;
+      _leads.clear();
+      _leadIdsAtLastMerge = {};
+      _leadsInitialSnapshotDone = false;
+      _lastLeadsRootSnap = null;
+      _lastLeadsGroupSnap = null;
+      // Root `leads` and subcollections `users/*/leads` — merge by document path.
+      _leadsRootSub = _firestore!
+          .collection('leads')
+          .snapshots()
+          .listen(
+            _onLeadsRootSnapshot,
+            onError: (Object e, StackTrace st) {
+              debugPrint(
+                'Firestore collection("leads") stream error (check rules for '
+                'match /leads/{leadId}): $e\n$st',
+              );
+              _leadsReady = true;
+              notifyListeners();
+            },
+          );
+      _leadsGroupSub = _firestore!
+          .collectionGroup('leads')
+          .snapshots()
+          .listen(
+            _onLeadsGroupSnapshot,
+            onError: (Object e, StackTrace st) {
+              debugPrint(
+                'Firestore collectionGroup("leads") stream error (check rules '
+                'for subcollection leads under users): $e\n$st',
+              );
+              _leadsReady = true;
+              notifyListeners();
+            },
+          );
       await _ensureDefaultUser();
       await _refreshDeliveryAgentUsers();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
-        'Firestore collection "customers", database=$kFirestoreDatabaseId',
+        'Firestore customers + leads (root + collectionGroup), database=$kFirestoreDatabaseId',
       );
       notifyListeners();
     } catch (e, st) {
@@ -387,6 +442,8 @@ class AppRepository extends ChangeNotifier {
     _isLoggedIn = false;
     _userRole = null;
     _currentUsername = null;
+    _leadIdsAtLastMerge = {};
+    _leadsInitialSnapshotDone = false;
     unawaited(_clearSession());
     notifyListeners();
   }
@@ -396,6 +453,72 @@ class AppRepository extends ChangeNotifier {
       ..clear()
       ..addAll(customersFromQueryDocs(snap.docs));
     _customersReady = true;
+    notifyListeners();
+  }
+
+  void _mergeLeadsFromSnapshots() {
+    final byPath = <String, Lead>{};
+    final root = _lastLeadsRootSnap;
+    final group = _lastLeadsGroupSnap;
+    if (root != null) {
+      for (final d in root.docs) {
+        byPath[d.reference.path] = leadFromFirestore(d);
+      }
+    }
+    if (group != null) {
+      for (final d in group.docs) {
+        byPath[d.reference.path] = leadFromFirestore(d);
+      }
+    }
+
+    final afterIds = byPath.keys.toSet();
+    // Require both root and collectionGroup snapshots before treating merges as
+    // "after baseline"; otherwise the second stream's first event looks like adds.
+    final hasLeadsBaseline = root != null && group != null;
+
+    if (hasLeadsBaseline && _leadsInitialSnapshotDone) {
+      final added = afterIds.difference(_leadIdsAtLastMerge);
+      if (added.isNotEmpty && !_newLeadsController.isClosed) {
+        final fresh = added.map((id) => byPath[id]!).toList()
+          ..sort((a, b) {
+            final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bt.compareTo(at);
+          });
+        _newLeadsController.add(fresh);
+      }
+    }
+    _leadIdsAtLastMerge = afterIds;
+    if (hasLeadsBaseline) {
+      _leadsInitialSnapshotDone = true;
+    }
+
+    _leads
+      ..clear()
+      ..addAll(byPath.values);
+    _leads.sort((a, b) {
+      final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bt.compareTo(at);
+    });
+    debugPrint(
+      'Leads merged: ${_leads.length} unique '
+      '(root docs=${root?.docs.length ?? "-"}, '
+      'group docs=${group?.docs.length ?? "-"})',
+    );
+  }
+
+  void _onLeadsRootSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
+    _lastLeadsRootSnap = snap;
+    _mergeLeadsFromSnapshots();
+    _leadsReady = true;
+    notifyListeners();
+  }
+
+  void _onLeadsGroupSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
+    _lastLeadsGroupSnap = snap;
+    _mergeLeadsFromSnapshots();
+    _leadsReady = true;
     notifyListeners();
   }
 
@@ -418,9 +541,63 @@ class AppRepository extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshLeads() async {
+    if (!_firebaseReady || _firestore == null) {
+      notifyListeners();
+      return;
+    }
+    try {
+      final root = await _firestore!.collection('leads').get();
+      final group = await _firestore!.collectionGroup('leads').get();
+      _lastLeadsRootSnap = root;
+      _lastLeadsGroupSnap = group;
+      _mergeLeadsFromSnapshots();
+      _leadsReady = true;
+      notifyListeners();
+      debugPrint('Firestore: refreshed leads (${_leads.length} unique)');
+    } on FirebaseException catch (e, st) {
+      debugPrint('refreshLeads failed: ${e.code} ${e.message}\n$st');
+    }
+  }
+
+  /// Persists `called` / `notInterested` on the lead document ([leadPath] is full
+  /// Firestore path, e.g. `users/uid/leads/docId`).
+  Future<void> updateLeadFollowUp(
+    String leadPath, {
+    bool? called,
+    bool? notInterested,
+  }) async {
+    if (called == null && notInterested == null) return;
+    if (!_firebaseReady || _firestore == null) {
+      final i = _leads.indexWhere((l) => l.id == leadPath);
+      if (i >= 0) {
+        _leads[i] = _leads[i].copyWith(
+          called: called,
+          notInterested: notInterested,
+        );
+        notifyListeners();
+      }
+      return;
+    }
+    try {
+      final data = <String, dynamic>{};
+      if (called != null) data['called'] = called;
+      if (notInterested != null) data['notInterested'] = notInterested;
+      await _firestore!.doc(leadPath).set(data, SetOptions(merge: true));
+    } on FirebaseException catch (e, st) {
+      debugPrint('updateLeadFollowUp failed: ${e.code} ${e.message}\n$st');
+      rethrow;
+    }
+  }
+
   @override
   void dispose() {
     _customerSub?.cancel();
+    _leadsRootSub?.cancel();
+    _leadsGroupSub?.cancel();
+    if (!_newLeadsController.isClosed) {
+      _newLeadsController.close();
+    }
     super.dispose();
   }
 
@@ -719,6 +896,30 @@ class AppRepository extends ChangeNotifier {
     _customers.addAll(sample);
 
     _customersReady = true;
+
+    _leads
+      ..clear()
+      ..addAll(_sampleLeadsLocal());
+    _leadsReady = true;
+  }
+
+  List<Lead> _sampleLeadsLocal() {
+    return [
+      Lead(
+        id: 'local_sample',
+        billing: 'monthly',
+        calendar: 'Monthly=26, Weekly=6, Sunday holiday',
+        createdAt: DateTime.now(),
+        goal: 'immunity',
+        meal: 'breakfast',
+        mealLabel: 'Breakfast (7:30am – 9am)',
+        mobile: '9986732351',
+        name: 'Sample lead (local)',
+        plan: 'standard',
+        price: '₹2,199',
+        source: 'healthy_meal_whatsapp',
+      ),
+    ];
   }
 }
 

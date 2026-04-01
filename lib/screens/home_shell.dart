@@ -5,6 +5,7 @@ import '../data/app_repository.dart';
 import 'customers_screen.dart';
 import 'dashboard_screen.dart';
 import 'delivery_screen.dart';
+import 'leads_screen.dart';
 import 'payments_screen.dart';
 
 class HomeShell extends StatefulWidget {
@@ -29,6 +30,7 @@ class _HomeShellState extends State<HomeShell> {
         : const [
             DashboardScreen(key: ValueKey('shell_dash')),
             CustomersScreen(key: ValueKey('shell_customers')),
+            LeadsScreen(key: ValueKey('shell_leads')),
             DeliveryScreen(key: ValueKey('shell_delivery')),
             PaymentsScreen(key: ValueKey('shell_payments')),
           ];
@@ -55,6 +57,11 @@ class _HomeShellState extends State<HomeShell> {
               icon: Icon(Icons.people_outline),
               selectedIcon: Icon(Icons.people),
               label: 'Customers',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.inbox_outlined),
+              selectedIcon: Icon(Icons.inbox),
+              label: 'Leads',
             ),
             NavigationDestination(
               icon: Icon(Icons.local_shipping_outlined),
