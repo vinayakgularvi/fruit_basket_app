@@ -129,6 +129,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 _FilterChip(
                   label: 'All',
@@ -160,7 +161,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       setState(() => _filter = _CustomerFilter.inactiveOnly),
                 ),
                 _FilterChip(
-                  label: 'Customer created',
+                  label: 'Pending approval',
                   selected: _filter == _CustomerFilter.createdPendingApproval,
                   onSelected: () => setState(
                     () => _filter = _CustomerFilter.createdPendingApproval,
@@ -214,43 +215,52 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       return Card(
                         child: Padding(
                           padding: const EdgeInsets.all(12),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              CircleAvatar(
-                                child: Text(
-                                  c.name.isNotEmpty
-                                      ? c.name[0].toUpperCase()
-                                      : '?',
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  CircleAvatar(
+                                    child: Text(
+                                      c.name.isNotEmpty
+                                          ? c.name[0].toUpperCase()
+                                          : '?',
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
-                                        Expanded(
-                                          child: Text(
-                                            c.name,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium,
-                                          ),
+                                        Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                c.name,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Chip(
+                                              label:
+                                                  Text(c.preferredSlot.label),
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              materialTapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                              padding: EdgeInsets.zero,
+                                            ),
+                                          ],
                                         ),
-                                        const SizedBox(width: 8),
-                                        Chip(
-                                          label: Text(c.preferredSlot.label),
-                                          visualDensity: VisualDensity.compact,
-                                          materialTapTargetSize:
-                                              MaterialTapTargetSize.shrinkWrap,
-                                          padding: EdgeInsets.zero,
-                                        ),
-                                      ],
-                                    ),
                                     const SizedBox(height: 4),
                                     Text(
                                       c.phone,
@@ -378,17 +388,28 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                   ],
                                 ),
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.receipt_long_outlined),
-                                tooltip: 'Generate receipt',
-                                onPressed: () async {
-                                  await showManualReceiptDialog(
-                                    context: context,
-                                    customer: c,
-                                    repo: repo,
-                                  );
-                                },
-                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              alignment: WrapAlignment.end,
+                              spacing: 0,
+                              runSpacing: 4,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.receipt_long_outlined),
+                                  tooltip: 'Generate receipt',
+                                  onPressed: () async {
+                                    await showManualReceiptDialog(
+                                      context: context,
+                                      customer: c,
+                                      repo: repo,
+                                    );
+                                  },
+                                ),
                               if (repo.isAdmin && c.customerCreated && !c.adminApproved)
                                 IconButton(
                                   icon: const Icon(Icons.verified_outlined),
@@ -482,7 +503,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             ],
                           ),
                         ),
-                      );
+                      ],
+                    ),
+                  ),
+                );
                     },
                   ),
                   ),
