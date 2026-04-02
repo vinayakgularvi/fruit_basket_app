@@ -29,11 +29,109 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final _search = TextEditingController();
   _CustomerFilter _filter = _CustomerFilter.all;
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = {};
 
   @override
   void dispose() {
     _search.dispose();
     super.dispose();
+  }
+
+  Future<void> _bulkAssignDeliveryAgent(
+    BuildContext context,
+    AppRepository repo,
+  ) async {
+    if (_selectedIds.isEmpty) return;
+    final agents = repo.deliveryAgentUsernames;
+    String? chosen;
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setLocal) {
+            return AlertDialog(
+              title: const Text('Assign delivery agent'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Delivery agent',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButton<String?>(
+                    isExpanded: true,
+                    value: chosen,
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('Unassigned'),
+                      ),
+                      ...agents.map(
+                        (u) => DropdownMenuItem<String?>(
+                          value: u,
+                          child: Text(u),
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) => setLocal(() => chosen = v),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Apply to selected'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (applied != true || !context.mounted) return;
+
+    var ok = 0;
+    try {
+      for (final id in _selectedIds) {
+        final idx = repo.customers.indexWhere((c) => c.id == id);
+        if (idx < 0) continue;
+        final c = repo.customers[idx];
+        await repo.updateCustomer(
+          c.copyWith(
+            clearAssignedDeliveryAgent: chosen == null,
+            assignedDeliveryAgentUsername: chosen,
+          ),
+        );
+        ok++;
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not update: $e')),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    setState(() {
+      _selectionMode = false;
+      _selectedIds.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          chosen == null
+              ? 'Cleared delivery agent for $ok customer(s).'
+              : 'Assigned "$chosen" to $ok customer(s).',
+        ),
+      ),
+    );
   }
 
   List<Customer> _apply(
@@ -92,17 +190,64 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Customers'),
+        leading: _selectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'Exit selection',
+                onPressed: () => setState(() {
+                  _selectionMode = false;
+                  _selectedIds.clear();
+                }),
+              )
+            : null,
+        title: _selectionMode
+            ? Text(
+                _selectedIds.isEmpty
+                    ? 'Select customers'
+                    : '${_selectedIds.length} selected',
+              )
+            : const Text('Customers'),
+        actions: [
+          if (_selectionMode) ...[
+            TextButton(
+              onPressed: items.isEmpty
+                  ? null
+                  : () => setState(() {
+                        _selectedIds
+                          ..clear()
+                          ..addAll(items.map((c) => c.id));
+                      }),
+              child: const Text('All'),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: FilledButton.tonal(
+                onPressed: _selectedIds.isEmpty
+                    ? null
+                    : () => _bulkAssignDeliveryAgent(context, repo),
+                child: const Text('Assign'),
+              ),
+            ),
+          ] else if (repo.isAdmin) ...[
+            IconButton(
+              icon: const Icon(Icons.local_shipping_outlined),
+              tooltip: 'Select customers to assign delivery agent',
+              onPressed: () => setState(() => _selectionMode = true),
+            ),
+          ],
+        ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await Navigator.of(context).push<void>(
-            MaterialPageRoute(builder: (_) => const AddCustomerScreen()),
-          );
-        },
-        icon: const Icon(Icons.person_add),
-        label: const Text('Add customer'),
-      ),
+      floatingActionButton: _selectionMode
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () async {
+                await Navigator.of(context).push<void>(
+                  MaterialPageRoute(builder: (_) => const AddCustomerScreen()),
+                );
+              },
+              icon: const Icon(Icons.person_add),
+              label: const Text('Add customer'),
+            ),
       body: Column(
         children: [
           Padding(
@@ -212,22 +357,44 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       final dtf = DateFormat.yMMMd().add_jm();
                       final periodShort =
                           c.billingPeriod == BillingPeriod.weekly ? 'wk' : 'mo';
-                      return Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  CircleAvatar(
-                                    child: Text(
-                                      c.name.isNotEmpty
-                                          ? c.name[0].toUpperCase()
-                                          : '?',
+                      return GestureDetector(
+                        onLongPress: repo.isAdmin && !_selectionMode
+                            ? () => setState(() {
+                                  _selectionMode = true;
+                                  _selectedIds
+                                    ..clear()
+                                    ..add(c.id);
+                                })
+                            : null,
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (_selectionMode) ...[
+                                      Checkbox(
+                                        value: _selectedIds.contains(c.id),
+                                        onChanged: (_) => setState(() {
+                                          if (_selectedIds.contains(c.id)) {
+                                            _selectedIds.remove(c.id);
+                                          } else {
+                                            _selectedIds.add(c.id);
+                                          }
+                                        }),
+                                      ),
+                                      const SizedBox(width: 4),
+                                    ],
+                                    CircleAvatar(
+                                      child: Text(
+                                        c.name.isNotEmpty
+                                            ? c.name[0].toUpperCase()
+                                            : '?',
+                                      ),
                                     ),
-                                  ),
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Column(
@@ -313,15 +480,38 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                     ),
                                     if (c.requestedDeliveryTime.isNotEmpty) ...[
                                       const SizedBox(height: 4),
-                                      Text(
-                                        'Delivery time: ${c.requestedDeliveryTime}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: cs.tertiary,
-                                              fontWeight: FontWeight.w500,
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              'Delivery time: ${c.requestedDeliveryTime}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: cs.tertiary,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
                                             ),
+                                          ),
+                                          if (c.strictDeliveryTime)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                left: 6,
+                                                top: 1,
+                                              ),
+                                              child: Tooltip(
+                                                message: 'Strict delivery time',
+                                                child: Icon(
+                                                  Icons.schedule,
+                                                  size: 18,
+                                                  color: cs.error,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                     ],
                                     if (c.notes.trim().isNotEmpty) ...[
@@ -506,10 +696,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       ],
                     ),
                   ),
-                );
-                    },
-                  ),
-                  ),
+                ),
+                    );
+                  },
+                ),
+                ),
           ),
         ],
       ),

@@ -22,7 +22,10 @@ void showPaymentRecordedWithUndo(
     messenger.showSnackBar(
       SnackBar(
         content: const Text('Payment recorded'),
-        duration: const Duration(seconds: 10),
+        duration: const Duration(seconds: 5),
+        // With an [action], Flutter defaults persist to true (snackbar never
+        // auto-dismisses). We still want a timed dismiss with Undo available.
+        persist: false,
         action: SnackBarAction(
           label: 'Undo',
           onPressed: () {

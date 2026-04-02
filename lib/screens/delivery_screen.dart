@@ -108,6 +108,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     final list = opt.customers;
     final routeKm = opt.kmFromPrevious;
     final done = repo.completedCountForSlot(_slot);
+    // Incomplete stops first, then completed — so checked deliveries move down.
+    final displayList = <Customer>[
+      ...list.where((c) => !repo.isDeliveryChecked(c.id)),
+      ...list.where((c) => repo.isDeliveryChecked(c.id)),
+    ];
     final cs = Theme.of(context).colorScheme;
     final routeTotalKm =
         routeKm.whereType<double>().fold(0.0, (a, b) => a + b);
@@ -231,23 +236,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 ),
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: LinearProgressIndicator(
-              value: list.isEmpty ? 0 : done / list.length,
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-            child: Text(
-              routeTotalKm == 0
-                  ? '$done / ${list.length} completed · ${_slot.label}'
-                  : '$done / ${list.length} completed · ${_slot.label} · '
-                      '${routeTotalKm.toStringAsFixed(1)} km (mapped legs)',
-              style: Theme.of(context).textTheme.labelLarge,
-            ),
-          ),
           Expanded(
             child: repo.customersLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -278,12 +266,17 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                         : ListView.builder(
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                    itemCount: list.length,
+                    itemCount: displayList.length,
                     itemBuilder: (context, i) {
-                      final Customer c = list[i];
+                      final Customer c = displayList[i];
                       final checked = repo.isDeliveryChecked(c.id);
                       final hasMapsLink = mapsUriFromAddress(c.address) != null;
-                      final legKm = i < routeKm.length ? routeKm[i] : null;
+                      final routeIndex =
+                          list.indexWhere((x) => x.id == c.id);
+                      final legKm = routeIndex >= 0 &&
+                              routeIndex < routeKm.length
+                          ? routeKm[routeIndex]
+                          : null;
 
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -306,8 +299,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                   children: [
                                     Text(
                                       legKm != null
-                                          ? 'Stop ${i + 1} · ${legKm.toStringAsFixed(1)} km ${i == 0 ? 'from depot' : 'from previous stop'}'
-                                          : 'Stop ${i + 1} · no map pin in address (straight-line distance N/A)',
+                                          ? 'Stop ${routeIndex + 1} · ${legKm.toStringAsFixed(1)} km ${routeIndex == 0 ? 'from depot' : 'from previous stop'}'
+                                          : 'Stop ${routeIndex + 1} · no map pin in address (straight-line distance N/A)',
                                       style: Theme.of(context)
                                           .textTheme
                                           .labelSmall
@@ -377,15 +370,32 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                     ),
                                     if (c.requestedDeliveryTime.isNotEmpty) ...[
                                       const SizedBox(height: 4),
-                                      Text(
-                                        'Time: ${c.requestedDeliveryTime}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: cs.tertiary,
-                                              fontWeight: FontWeight.w600,
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              'Time: ${c.requestedDeliveryTime}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: cs.tertiary,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                             ),
+                                          ),
+                                          if (c.strictDeliveryTime)
+                                            Tooltip(
+                                              message: 'Strict delivery time',
+                                              child: Icon(
+                                                Icons.schedule,
+                                                size: 18,
+                                                color: cs.error,
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                     ],
                                     if (hasMapsLink) ...[
@@ -416,6 +426,23 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     },
                   ),
                   ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+            child: LinearProgressIndicator(
+              value: list.isEmpty ? 0 : done / list.length,
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+            child: Text(
+              routeTotalKm == 0
+                  ? '$done / ${list.length} completed · ${_slot.label}'
+                  : '$done / ${list.length} completed · ${_slot.label} · '
+                      '${routeTotalKm.toStringAsFixed(1)} km (mapped legs)',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
           ),
         ],
       ),

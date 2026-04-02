@@ -51,6 +51,7 @@ Map<String, dynamic> customerToFirestore(Customer c) {
       DateTime(c.endDate.year, c.endDate.month, c.endDate.day),
     ),
     'requestedDeliveryTime': c.requestedDeliveryTime,
+    'strictDeliveryTime': c.strictDeliveryTime,
     'active': c.active,
     'notes': c.notes,
     'assignedDeliveryAgentUsername': c.assignedDeliveryAgentUsername,
@@ -128,6 +129,7 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     startDate: DateTime(sd.year, sd.month, sd.day),
     endDate: DateTime(ed.year, ed.month, ed.day),
     requestedDeliveryTime: _coerceString(d['requestedDeliveryTime']),
+    strictDeliveryTime: _coerceStrictDeliveryTime(d['strictDeliveryTime']),
     active: _coerceBool(d['active']),
     notes: d['notes'] as String? ?? '',
     assignedDeliveryAgentUsername:
@@ -207,6 +209,18 @@ bool _coerceBool(dynamic v) {
     if (t == 'false' || t == '0') return false;
   }
   return true;
+}
+
+bool _coerceStrictDeliveryTime(dynamic v) {
+  if (v == null) return false;
+  if (v is bool) return v;
+  if (v is int) return v != 0;
+  if (v is String) {
+    final t = v.toLowerCase();
+    if (t == 'true' || t == '1') return true;
+    if (t == 'false' || t == '0') return false;
+  }
+  return false;
 }
 
 /// Parses each doc; skips and logs any document that still fails to parse.

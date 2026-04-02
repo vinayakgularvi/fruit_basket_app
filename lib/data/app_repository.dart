@@ -52,8 +52,9 @@ class AppRepository extends ChangeNotifier {
   bool get authLoading => _authLoading;
   String? get userRole => _userRole;
   String? get currentUsername => _currentUsername;
-  bool get isDeliveryAgent => _userRole == 'delivery_agent';
-  bool get isAdmin => _userRole == 'admin';
+  bool get isDeliveryAgent =>
+      _userRole?.trim().toLowerCase() == 'delivery_agent';
+  bool get isAdmin => _userRole?.trim().toLowerCase() == 'admin';
   List<String> get deliveryAgentUsernames =>
       List.unmodifiable(_deliveryAgentUsernames);
 
@@ -264,6 +265,7 @@ class AppRepository extends ChangeNotifier {
           );
       await _ensureDefaultUser();
       await _refreshDeliveryAgentUsers();
+      await _syncUserRoleFromFirestore();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
         'Firestore customers + leads (root + collectionGroup), database=$kFirestoreDatabaseId',
@@ -288,6 +290,32 @@ class AppRepository extends ChangeNotifier {
     _isLoggedIn = true;
     _currentUsername = username;
     _userRole = role;
+  }
+
+  /// Web stores session in [SharedPreferences] per origin; role can drift from
+  /// Firestore. Re-read `users/{username}` after Firebase connects so admin
+  /// accounts are not stuck on a stale `delivery_agent` session.
+  Future<void> _syncUserRoleFromFirestore() async {
+    if (!_firebaseReady || _firestore == null) return;
+    if (!_isLoggedIn || _currentUsername == null) return;
+    final username = _currentUsername!;
+    try {
+      final snap = await _firestore!.collection('users').doc(username).get();
+      final d = snap.data();
+      if (d == null || d['active'] != true) return;
+      if (d['username'] != username) return;
+      final raw = d['role'] as String? ?? 'admin';
+      final normalized = raw.trim().isEmpty ? 'admin' : raw.trim();
+      if (normalized != _userRole) {
+        _userRole = normalized;
+        await _saveSession(username: username, role: normalized);
+        notifyListeners();
+      }
+    } on FirebaseException catch (e, st) {
+      debugPrint(
+        'syncUserRoleFromFirestore: ${e.code} ${e.message}\n$st',
+      );
+    }
   }
 
   Future<void> _saveSession({
@@ -421,7 +449,12 @@ class AppRepository extends ChangeNotifier {
           d['password'] == password;
       _isLoggedIn = ok;
       _currentUsername = ok ? username : null;
-      _userRole = ok ? (d['role'] as String? ?? 'admin') : null;
+      if (ok) {
+        final r = d['role'] as String? ?? 'admin';
+        _userRole = r.trim().isEmpty ? 'admin' : r.trim();
+      } else {
+        _userRole = null;
+      }
       await _refreshDeliveryAgentUsers();
       if (ok) {
         await _saveSession(
@@ -795,6 +828,79 @@ class AppRepository extends ChangeNotifier {
         pendingDueRemainingRupees: fullPay ? null : pendingRem,
       ),
     );
+  }
+
+  /// Admin override for outstanding amount in the current billing period.
+  Future<void> adjustDueAmountForCurrentPeriod(
+    String customerId,
+    int newDueRupees,
+  ) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    if (!c.active) return;
+    final today = dateOnly(DateTime.now());
+    final pStart = periodStartForDate(c, today);
+    if (pStart == null) return;
+
+    final plan = c.planPriceRupees;
+    final v = newDueRupees.clamp(0, plan);
+    final due = paymentDueForCustomer(c, today);
+
+    if (v == 0) {
+      if (due != null) {
+        await recordPaymentCollection(
+          customerId,
+          due.kind,
+          collectedAmountRupees: due.amountRupees,
+        );
+      }
+      return;
+    }
+
+    if (v >= plan) {
+      await updateCustomer(
+        c.copyWith(
+          paymentTrackedPeriodStart: pStart,
+          clearPendingDue: true,
+          weeklyPeriodPaid: false,
+          monthlyAdvancePaid: false,
+          monthlyBalancePaid: false,
+        ),
+      );
+      return;
+    }
+
+    final kind = due?.kind ??
+        (c.billingPeriod == BillingPeriod.weekly
+            ? PaymentCollectionKind.weeklyFull
+            : PaymentCollectionKind.monthlyAdvance);
+    await updateCustomer(
+      c.copyWith(
+        paymentTrackedPeriodStart: pStart,
+        pendingDueKind: kind.name,
+        pendingDueRemainingRupees: v,
+        weeklyPeriodPaid: false,
+        monthlyAdvancePaid: false,
+        monthlyBalancePaid: false,
+      ),
+    );
+  }
+
+  /// Sets how much of the plan is treated as paid for this period (admin).
+  /// Same as setting due to plan − paid via [adjustDueAmountForCurrentPeriod].
+  Future<void> adjustPaidInCurrentPeriod(
+    String customerId,
+    int newPaidRupees,
+  ) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    if (!c.active) return;
+    final plan = c.planPriceRupees;
+    final paid = newPaidRupees.clamp(0, plan);
+    final newDue = plan - paid;
+    await adjustDueAmountForCurrentPeriod(customerId, newDue);
   }
 
   void markPaymentPaid(String paymentId) {

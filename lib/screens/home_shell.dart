@@ -8,6 +8,11 @@ import 'delivery_screen.dart';
 import 'leads_screen.dart';
 import 'payments_screen.dart';
 
+/// Below this width the shell uses a bottom [NavigationBar] (can clip many
+/// items on narrow web viewports). Wider layouts use [NavigationRail] so every
+/// admin destination (including Leads) stays visible.
+const _kSideNavBreakpoint = 720.0;
+
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -21,13 +26,10 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
-    // Delivery agents get a lighter shell (no Customers / Payments) but still
-    // need Leads — same Firestore listeners as admins.
     final deliveryOnly = repo.isDeliveryAgent;
     final screens = deliveryOnly
         ? const [
             DashboardScreen(key: ValueKey('shell_dash')),
-            LeadsScreen(key: ValueKey('shell_leads_agent')),
             DeliveryScreen(key: ValueKey('shell_delivery_agent')),
           ]
         : const [
@@ -43,11 +45,6 @@ class _HomeShellState extends State<HomeShell> {
               icon: Icon(Icons.dashboard_outlined),
               selectedIcon: Icon(Icons.dashboard),
               label: 'Home',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.inbox_outlined),
-              selectedIcon: Icon(Icons.inbox),
-              label: 'Leads',
             ),
             NavigationDestination(
               icon: Icon(Icons.local_shipping_outlined),
@@ -82,7 +79,68 @@ class _HomeShellState extends State<HomeShell> {
               label: 'Payments',
             ),
           ];
+    final railDestinations = !deliveryOnly
+        ? const [
+            NavigationRailDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard),
+              label: Text('Home'),
+            ),
+            NavigationRailDestination(
+              icon: Icon(Icons.people_outline),
+              selectedIcon: Icon(Icons.people),
+              label: Text('Customers'),
+            ),
+            NavigationRailDestination(
+              icon: Icon(Icons.inbox_outlined),
+              selectedIcon: Icon(Icons.inbox),
+              label: Text('Leads'),
+            ),
+            NavigationRailDestination(
+              icon: Icon(Icons.local_shipping_outlined),
+              selectedIcon: Icon(Icons.local_shipping),
+              label: Text('Deliveries'),
+            ),
+            NavigationRailDestination(
+              icon: Icon(Icons.payments_outlined),
+              selectedIcon: Icon(Icons.payments),
+              label: Text('Payments'),
+            ),
+          ]
+        : const <NavigationRailDestination>[];
+
     final selectedIndex = _index >= screens.length ? 0 : _index;
+    final width = MediaQuery.sizeOf(context).width;
+    final useSideNav = !deliveryOnly && width >= _kSideNavBreakpoint;
+
+    if (useSideNav) {
+      // [extended] and [labelType] != null/.all are mutually exclusive in Material.
+      final extendedRail = width >= 1100;
+      return Scaffold(
+        body: Row(
+          children: [
+            NavigationRail(
+              selectedIndex: selectedIndex,
+              onDestinationSelected: (i) => setState(() => _index = i),
+              labelType: extendedRail
+                  ? null
+                  : NavigationRailLabelType.all,
+              extended: extendedRail,
+              minExtendedWidth: 200,
+              destinations: railDestinations,
+            ),
+            const VerticalDivider(width: 1, thickness: 1),
+            Expanded(
+              child: IndexedStack(
+                index: selectedIndex,
+                children: screens,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       body: IndexedStack(
         index: selectedIndex,

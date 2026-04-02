@@ -14,6 +14,7 @@ class Customer {
     required this.startDate,
     required this.endDate,
     this.requestedDeliveryTime = '',
+    this.strictDeliveryTime = false,
     this.active = true,
     this.notes = '',
     this.assignedDeliveryAgentUsername,
@@ -45,6 +46,8 @@ class Customer {
   final DateTime endDate;
   /// Preferred time window within the slot (e.g. "8–10 AM"), free text.
   final String requestedDeliveryTime;
+  /// Customer expects delivery within the requested window (highlight in UI).
+  final bool strictDeliveryTime;
   final bool active;
   final String notes;
   final String? assignedDeliveryAgentUsername;
@@ -81,6 +84,7 @@ class Customer {
     DateTime? startDate,
     DateTime? endDate,
     String? requestedDeliveryTime,
+    bool? strictDeliveryTime,
     bool? active,
     String? notes,
     String? assignedDeliveryAgentUsername,
@@ -98,6 +102,7 @@ class Customer {
     bool? customerCreated,
     bool? adminApproved,
     bool clearPendingDue = false,
+    bool clearAssignedDeliveryAgent = false,
   }) {
     return Customer(
       id: id ?? this.id,
@@ -112,10 +117,13 @@ class Customer {
       endDate: endDate ?? this.endDate,
       requestedDeliveryTime:
           requestedDeliveryTime ?? this.requestedDeliveryTime,
+      strictDeliveryTime: strictDeliveryTime ?? this.strictDeliveryTime,
       active: active ?? this.active,
       notes: notes ?? this.notes,
-      assignedDeliveryAgentUsername:
-          assignedDeliveryAgentUsername ?? this.assignedDeliveryAgentUsername,
+      assignedDeliveryAgentUsername: clearAssignedDeliveryAgent
+          ? null
+          : (assignedDeliveryAgentUsername ??
+              this.assignedDeliveryAgentUsername),
       skippedDeliveryDays: skippedDeliveryDays ?? this.skippedDeliveryDays,
       skippedDeliveryDates:
           skippedDeliveryDates ?? this.skippedDeliveryDates,

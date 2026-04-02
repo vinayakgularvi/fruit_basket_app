@@ -1,10 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../app_navigator.dart';
 import '../data/app_repository.dart';
+import '../models/customer.dart';
+import '../models/payment.dart';
+import '../utils/delivery_plan_dates.dart';
 import '../utils/payment_receipt_pdf.dart';
+import '../utils/payment_schedule.dart';
 import '../utils/schedule_after_frame.dart';
 import '../utils/whatsapp_launch.dart';
 import '../widgets/collected_amount_dialog.dart';
@@ -38,31 +44,173 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     return n.contains(q);
   }
 
+  /// Amount already collected toward the current billing period (estimate from due vs plan).
+  int _paidInCurrentPeriod(Customer c, DateTime today) {
+    if (!c.active) return 0;
+    final pStart = periodStartForDate(c, today);
+    if (pStart == null) return 0;
+    final due = paymentDueForCustomer(c, today);
+    if (due == null) return c.planPriceRupees;
+    return (c.planPriceRupees - due.amountRupees).clamp(0, c.planPriceRupees);
+  }
+
+  /// Outstanding for today’s rules (0 if none due).
+  int _remainingForCustomer(Customer c, DateTime today) {
+    if (!c.active) return 0;
+    final due = paymentDueForCustomer(c, today);
+    return due?.amountRupees ?? 0;
+  }
+
+  Payment? _pendingPaymentFor(
+    List<Payment> pending,
+    String customerId,
+  ) {
+    for (final p in pending) {
+      if (p.customerId == customerId) return p;
+    }
+    return null;
+  }
+
+  bool _canEditPeriodAmounts(Customer c, DateTime today) =>
+      c.active && periodStartForDate(c, today) != null;
+
+  Future<void> _editDue(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+    DateTime today,
+  ) async {
+    if (!_canEditPeriodAmounts(c, today)) return;
+    final controller = TextEditingController(
+      text: '${_remainingForCustomer(c, today)}',
+    );
+    bool? ok;
+    late final String entered;
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Due — ${c.name}'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Amount due (₹)',
+              helperText: '0 = nothing owed for this period',
+            ),
+            autofocus: true,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      entered = controller.text;
+      controller.dispose();
+    }
+    if (ok != true || !context.mounted) return;
+    final v = int.tryParse(entered.trim());
+    if (v == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid number')),
+      );
+      return;
+    }
+    await repo.adjustDueAmountForCurrentPeriod(c.id, v);
+  }
+
+  Future<void> _editPaid(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+    DateTime today,
+  ) async {
+    if (!_canEditPeriodAmounts(c, today)) return;
+    final controller = TextEditingController(
+      text: '${_paidInCurrentPeriod(c, today)}',
+    );
+    bool? ok;
+    late final String entered;
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Paid (period) — ${c.name}'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: 'Amount paid (₹)',
+              helperText:
+                  'Plan is ₹${c.planPriceRupees} · adjusts what is still due',
+            ),
+            autofocus: true,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      entered = controller.text;
+      controller.dispose();
+    }
+    if (ok != true || !context.mounted) return;
+    final v = int.tryParse(entered.trim());
+    if (v == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid number')),
+      );
+      return;
+    }
+    await repo.adjustPaidInCurrentPeriod(c.id, v);
+  }
+
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final pending = repo.pendingPayments;
     final currency = NumberFormat.currency(symbol: '₹', decimalDigits: 0);
     final q = _search.text;
-    final filtered = pending
-        .where((p) => _matchesSearch(p.customerName, p.phone, q))
+    final today = dateOnly(DateTime.now());
+
+    final activeOnly = List<Customer>.from(repo.activeCustomers())
+      ..sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+
+    final filtered = activeOnly
+        .where((c) => _matchesSearch(c.name, c.phone, q))
         .toList();
-    final totalFiltered =
-        filtered.fold<double>(0, (a, p) => a + p.amount);
+
+    var totalPaid = 0;
+    var totalRemaining = 0;
+    for (final c in repo.activeCustomers()) {
+      totalPaid += _paidInCurrentPeriod(c, today);
+      totalRemaining += _remainingForCustomer(c, today);
+    }
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Payments'),
       ),
-      body: pending.isEmpty
-          ? Center(
-              child: Text(
-                'No pending payments. Great work!',
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-            )
+      body: repo.customersLoading
+          ? const Center(child: CircularProgressIndicator())
           : Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -94,32 +242,34 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                   child: Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(
-                            Icons.account_balance_wallet_outlined,
-                            color: Theme.of(context).colorScheme.primary,
+                          Text(
+                            'Active customers · current period',
+                            style: Theme.of(context).textTheme.labelLarge,
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  q.trim().isEmpty
-                                      ? 'Total outstanding'
-                                      : 'Outstanding (filtered)',
-                                  style: Theme.of(context).textTheme.labelLarge,
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _SummaryTile(
+                                  icon: Icons.payments_outlined,
+                                  label: 'Total paid',
+                                  value: currency.format(totalPaid),
+                                  color: Theme.of(context).colorScheme.primary,
                                 ),
-                                Text(
-                                  currency.format(totalFiltered),
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .headlineSmall
-                                      ?.copyWith(fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _SummaryTile(
+                                  icon: Icons.pending_outlined,
+                                  label: 'Remaining',
+                                  value: currency.format(totalRemaining),
+                                  color: Theme.of(context).colorScheme.error,
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -130,7 +280,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                   child: filtered.isEmpty
                       ? Center(
                           child: Text(
-                            'No matches for your search.',
+                            q.trim().isEmpty
+                                ? 'No customers yet.'
+                                : 'No matches for your search.',
                             style: Theme.of(context)
                                 .textTheme
                                 .bodyLarge
@@ -147,12 +299,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 8),
                           itemBuilder: (context, i) {
-                            final p = filtered[i];
-                            final matches = repo.customers
-                                .where((c) => c.id == p.customerId)
-                                .toList();
-                            final cust =
-                                matches.isEmpty ? null : matches.first;
+                            final c = filtered[i];
+                            final pmt = _pendingPaymentFor(pending, c.id);
+                            final paid = _paidInCurrentPeriod(c, today);
+                            final remaining = _remainingForCustomer(c, today);
+                            final cs = Theme.of(context).colorScheme;
+
                             return Card(
                               child: Padding(
                                 padding: const EdgeInsets.all(16),
@@ -169,21 +321,20 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                 CrossAxisAlignment.start,
                                             children: [
                                               Text(
-                                                p.customerName,
+                                                c.name,
                                                 style: Theme.of(context)
                                                     .textTheme
                                                     .titleMedium,
                                               ),
-                                              if ((p.phone).isNotEmpty) ...[
+                                              if (c.phone.isNotEmpty) ...[
                                                 const SizedBox(height: 4),
                                                 Text(
-                                                  p.phone,
+                                                  c.phone,
                                                   style: Theme.of(context)
                                                       .textTheme
                                                       .bodySmall
                                                       ?.copyWith(
-                                                        color: Theme.of(context)
-                                                            .colorScheme
+                                                        color: cs
                                                             .onSurfaceVariant,
                                                       ),
                                                 ),
@@ -191,14 +342,107 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                             ],
                                           ),
                                         ),
-                                        Text(
-                                          currency.format(p.amount),
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .titleMedium
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w700,
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  'Paid (period): ${currency.format(paid)}',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodyMedium
+                                                      ?.copyWith(
+                                                        color: cs.primary,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                ),
                                               ),
+                                              IconButton(
+                                                tooltip:
+                                                    'Edit paid (this period)',
+                                                icon: const Icon(
+                                                  Icons.edit_outlined,
+                                                  size: 18,
+                                                ),
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                padding: EdgeInsets.zero,
+                                                constraints:
+                                                    const BoxConstraints(
+                                                  minWidth: 28,
+                                                  minHeight: 28,
+                                                ),
+                                                onPressed: _canEditPeriodAmounts(
+                                                        c, today)
+                                                    ? () => _editPaid(
+                                                          context,
+                                                          repo,
+                                                          c,
+                                                          today,
+                                                        )
+                                                    : null,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        Expanded(
+                                          child: Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.end,
+                                            children: [
+                                              Flexible(
+                                                child: Text(
+                                                  remaining > 0
+                                                      ? 'Due: ${currency.format(remaining)}'
+                                                      : 'Due: —',
+                                                  textAlign: TextAlign.end,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodyMedium
+                                                      ?.copyWith(
+                                                        color: remaining > 0
+                                                            ? cs.error
+                                                            : cs
+                                                                .onSurfaceVariant,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                ),
+                                              ),
+                                              IconButton(
+                                                tooltip: 'Edit amount due',
+                                                icon: const Icon(
+                                                  Icons.edit_outlined,
+                                                  size: 18,
+                                                ),
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                padding: EdgeInsets.zero,
+                                                constraints:
+                                                    const BoxConstraints(
+                                                  minWidth: 28,
+                                                  minHeight: 28,
+                                                ),
+                                                onPressed: _canEditPeriodAmounts(
+                                                        c, today)
+                                                    ? () => _editDue(
+                                                          context,
+                                                          repo,
+                                                          c,
+                                                          today,
+                                                        )
+                                                    : null,
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -206,18 +450,18 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                     Align(
                                       alignment: Alignment.centerRight,
                                       child: FilledButton.tonal(
-                                        onPressed: p.kind == null ||
-                                                cust == null
+                                        onPressed: pmt == null ||
+                                                pmt.kind == null
                                             ? null
                                             : () async {
-                                                final before = cust;
+                                                final before = c;
                                                 final amount =
                                                     await showCollectedAmountDialog(
                                                   context,
                                                   suggestedRupees:
-                                                      p.amount.round(),
+                                                      pmt.amount.round(),
                                                   title:
-                                                      'Mark paid — ${p.customerName}',
+                                                      'Add Payment — ${pmt.customerName}',
                                                 );
                                                 if (!context.mounted ||
                                                     amount == null) {
@@ -225,8 +469,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                 }
                                                 await repo
                                                     .recordPaymentCollection(
-                                                  p.customerId,
-                                                  p.kind!,
+                                                  pmt.customerId,
+                                                  pmt.kind!,
                                                   collectedAmountRupees:
                                                       amount,
                                                 );
@@ -250,56 +494,18 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                     context: dialogCtx,
                                                     useRootNavigator: true,
                                                     builder: (ctx) =>
-                                                        AlertDialog(
-                                                      title: const Text(
-                                                        'Payment recorded',
-                                                      ),
-                                                      content: const Text(
-                                                        'Choose receipt action',
-                                                      ),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed: () =>
-                                                              Navigator.of(
-                                                                      ctx)
-                                                                  .pop(
-                                                                      'skip',
-                                                                    ),
-                                                          child: const Text(
-                                                            'Skip',
-                                                          ),
-                                                        ),
-                                                        FilledButton(
-                                                          onPressed: () =>
-                                                              Navigator.of(
-                                                                      ctx)
-                                                                  .pop('pdf'),
-                                                          child: const Text(
-                                                            'Download PDF',
-                                                          ),
-                                                        ),
-                                                        FilledButton.tonal(
-                                                          onPressed: () =>
-                                                              Navigator.of(
-                                                                      ctx)
-                                                                  .pop('wa'),
-                                                          child: const Text(
-                                                            'Send WhatsApp',
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
+                                                        const _PaymentRecordedReceiptDialog(),
                                                   );
                                                   if (!dialogCtx.mounted) {
                                                     return null;
                                                   }
                                                   if (action == 'pdf') {
                                                     await downloadPaymentReceiptPdf(
-                                                      customer: cust,
+                                                      customer: c,
                                                       collectedAmountRupees:
                                                           amount,
                                                       paymentLabel:
-                                                          p.dueLabel,
+                                                          pmt.dueLabel,
                                                       collectedAt:
                                                           DateTime.now(),
                                                       collectedBy: repo
@@ -309,11 +515,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                       'wa') {
                                                     await sendReceiptToWhatsApp(
                                                       dialogCtx,
-                                                      customer: cust,
+                                                      customer: c,
                                                       collectedAmountRupees:
                                                           amount,
                                                       paymentLabel:
-                                                          p.dueLabel,
+                                                          pmt.dueLabel,
                                                       collectedAt:
                                                           DateTime.now(),
                                                       collectedBy: repo
@@ -331,7 +537,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                   return null;
                                                 });
                                               },
-                                        child: const Text('Mark paid'),
+                                        child: const Text('Add Payment'),
                                       ),
                                     ),
                                   ],
@@ -343,6 +549,102 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+/// Receipt choice after recording a payment; closes with [Navigator.pop] `'skip'`
+/// after 5 seconds if the user does not choose PDF or WhatsApp.
+class _PaymentRecordedReceiptDialog extends StatefulWidget {
+  const _PaymentRecordedReceiptDialog();
+
+  @override
+  State<_PaymentRecordedReceiptDialog> createState() =>
+      _PaymentRecordedReceiptDialogState();
+}
+
+class _PaymentRecordedReceiptDialogState
+    extends State<_PaymentRecordedReceiptDialog> {
+  Timer? _autoClose;
+
+  @override
+  void initState() {
+    super.initState();
+    _autoClose = Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      Navigator.of(context).pop('skip');
+    });
+  }
+
+  @override
+  void dispose() {
+    _autoClose?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Payment recorded'),
+      content: const Text('Choose receipt action'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop('skip'),
+          child: const Text('Skip'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop('pdf'),
+          child: const Text('Download PDF'),
+        ),
+        FilledButton.tonal(
+          onPressed: () => Navigator.of(context).pop('wa'),
+          child: const Text('Send WhatsApp'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SummaryTile extends StatelessWidget {
+  const _SummaryTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 28),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              Text(
+                value,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: color,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

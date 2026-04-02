@@ -11,26 +11,21 @@ import '../models/subscription_plan.dart';
 import '../utils/delivery_plan_dates.dart';
 import '../utils/payment_schedule.dart';
 
-/// 15-minute windows for “Requested time of delivery” (morning route).
+/// 30-minute windows for “Requested time of delivery” (morning: 7–9:30 AM).
 const _morningDeliveryWindows = <String>[
-  '7:00–7:15 AM',
-  '7:15–7:30 AM',
-  '7:30–7:45 AM',
-  '7:45–8:00 AM',
-  '8:00–8:15 AM',
-  '8:15–8:30 AM',
-  '8:30–8:45 AM',
-  '8:45–9:00 AM',
+  '7:00–7:30 AM',
+  '7:30–8:00 AM',
+  '8:00–8:30 AM',
+  '8:30–9:00 AM',
+  '9:00–9:30 AM',
 ];
 
-/// 15-minute windows for evening route.
+/// 30-minute windows for evening route (5–7 PM).
 const _eveningDeliveryWindows = <String>[
-  '5:30–5:45 PM',
-  '5:45–6:00 PM',
-  '6:00–6:15 PM',
-  '6:15–6:30 PM',
-  '6:30–6:45 PM',
-  '6:45–7:00 PM',
+  '5:00–5:30 PM',
+  '5:30–6:00 PM',
+  '6:00–6:30 PM',
+  '6:30–7:00 PM',
 ];
 
 List<String> _deliveryWindowsForSlot(DeliverySlot slot) =>
@@ -124,6 +119,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   DeliverySlot _slot = DeliverySlot.morning;
 
   String _deliveryTimePreset = '';
+  bool _strictDeliveryTime = false;
 
   BillingPeriod _billingPeriod = BillingPeriod.monthly;
   PlanTier _planTier = PlanTier.basic;
@@ -151,6 +147,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       _startDate = dateOnly(e.startDate);
       _active = e.active;
       _assignedDeliveryAgentUsername = e.assignedDeliveryAgentUsername;
+      _strictDeliveryTime = e.strictDeliveryTime;
       _applyDeliveryTimeFromCustomer(e);
     } else {
       _startDate = dateOnly(DateTime.now());
@@ -272,6 +269,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       startDate: dateOnly(_startDate),
       endDate: _endDate,
       requestedDeliveryTime: time,
+      strictDeliveryTime: _strictDeliveryTime,
       active: editing != null ? _active : true,
       notes: _notes.text.trim(),
       assignedDeliveryAgentUsername: _assignedDeliveryAgentUsername,
@@ -604,8 +602,8 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               decoration: InputDecoration(
                 labelText: 'Requested time of delivery',
                 helperText: _slot == DeliverySlot.morning
-                    ? 'Morning: 7:00–9:00 AM (15-minute preferences)'
-                    : 'Evening: 5:30–7:00 PM (15-minute preferences)',
+                    ? 'Morning: 7:00–9:30 AM (30-minute windows)'
+                    : 'Evening: 5:00–7:00 PM (30-minute windows)',
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
@@ -645,7 +643,21 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                 validator: _validateRequestedTimeCustom,
               ),
             ],
-            const SizedBox(height: 16),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              secondary: Icon(
+                Icons.schedule,
+                color: _strictDeliveryTime ? cs.error : cs.onSurfaceVariant,
+              ),
+              title: const Text('Strict delivery time'),
+              subtitle: const Text(
+                'Delivery should occur within the requested window. '
+                'Shows a red indicator on the route and customer list.',
+              ),
+              value: _strictDeliveryTime,
+              onChanged: (v) => setState(() => _strictDeliveryTime = v),
+            ),
+            const SizedBox(height: 8),
             TextFormField(
               controller: _address,
               keyboardType: TextInputType.multiline,
