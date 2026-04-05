@@ -3,6 +3,10 @@ enum PlanTier {
   basic,
   standard,
   premium,
+  alkalineInfusedWater1L,
+  comboBasicAlkaline,
+  comboStandardAlkaline,
+  comboPremiumAlkaline,
 }
 
 extension PlanTierLabel on PlanTier {
@@ -10,6 +14,11 @@ extension PlanTierLabel on PlanTier {
         PlanTier.basic => 'Basic Fruit Plan',
         PlanTier.standard => 'Standard Healthy Plan',
         PlanTier.premium => 'Premium Nutrition Plan',
+        PlanTier.alkalineInfusedWater1L =>
+          'Alkaline Infused Water (1 L bottle)',
+        PlanTier.comboBasicAlkaline => 'Combo Basic + Alkaline',
+        PlanTier.comboStandardAlkaline => 'Combo Standard + Alkaline',
+        PlanTier.comboPremiumAlkaline => 'Combo Premium + Alkaline',
       };
 }
 
@@ -54,11 +63,19 @@ int planPriceRupees(PlanTier tier, BillingPeriod period) {
       PlanTier.basic => 343,
       PlanTier.standard => 553,
       PlanTier.premium => 833,
+      PlanTier.alkalineInfusedWater1L => 343,
+      PlanTier.comboBasicAlkaline => 649,
+      PlanTier.comboStandardAlkaline => 849,
+      PlanTier.comboPremiumAlkaline => 1149,
     };
   }
   return switch (tier) {
     PlanTier.basic => 1299,
     PlanTier.standard => 2199,
     PlanTier.premium => 2999,
+    PlanTier.alkalineInfusedWater1L => 1299,
+    PlanTier.comboBasicAlkaline => 2299,
+    PlanTier.comboStandardAlkaline => 3199,
+    PlanTier.comboPremiumAlkaline => 3999,
   };
 }
