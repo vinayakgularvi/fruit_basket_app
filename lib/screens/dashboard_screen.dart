@@ -3,9 +3,13 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import '../models/customer_list_filter.dart';
 
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, this.onOpenCustomersFilter});
+
+  /// Admin: open Customers tab with this filter. Null = stat cards are not links.
+  final void Function(CustomerListFilter filter)? onOpenCustomersFilter;
 
   Future<void> _showAddDeliveryAgentDialog(BuildContext context) async {
     final userCtrl = TextEditingController();
@@ -100,6 +104,7 @@ class DashboardScreen extends StatelessWidget {
             builder: (context, constraints) {
               final w = constraints.maxWidth;
               final wide = w > 560;
+              final openCustomers = onOpenCustomersFilter;
               final cards = deliveryOnly
                   ? [
                       _StatCard(
@@ -107,6 +112,16 @@ class DashboardScreen extends StatelessWidget {
                         label: 'Today’s deliveries',
                         value: '${repo.todayDeliveryCount}',
                         subtitle: 'stops planned',
+                      ),
+                      _StatCard(
+                        icon: Icons.today_outlined,
+                        label: 'Last day of plan',
+                        value: '${repo.lastDayActiveCustomerCount}',
+                        subtitle: 'active · subscription ends today',
+                        onTap: openCustomers == null
+                            ? null
+                            : () =>
+                                openCustomers(CustomerListFilter.lastDayOfPlan),
                       ),
                       _StatCard(
                         icon: Icons.currency_rupee,
@@ -130,6 +145,16 @@ class DashboardScreen extends StatelessWidget {
                         subtitle: 'stops planned',
                       ),
                       _StatCard(
+                        icon: Icons.today_outlined,
+                        label: 'Last day of plan',
+                        value: '${repo.lastDayActiveCustomerCount}',
+                        subtitle: 'active · subscription ends today',
+                        onTap: openCustomers == null
+                            ? null
+                            : () =>
+                                openCustomers(CustomerListFilter.lastDayOfPlan),
+                      ),
+                      _StatCard(
                         icon: Icons.people,
                         label: 'Active customers',
                         value: '${repo.activeCustomers().length}',
@@ -140,6 +165,11 @@ class DashboardScreen extends StatelessWidget {
                         label: 'New customers created',
                         value: '${repo.newCustomersPendingApprovalCount}',
                         subtitle: 'awaiting admin approval',
+                        onTap: openCustomers == null
+                            ? null
+                            : () => openCustomers(
+                                  CustomerListFilter.createdPendingApproval,
+                                ),
                       ),
                       _StatCard(
                         icon: Icons.currency_rupee,
@@ -250,55 +280,72 @@ class _StatCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.subtitle,
+    this.onTap,
   });
 
   final IconData icon;
   final String label;
   final String value;
   final String subtitle;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: cs.primary, size: 26),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    label,
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    value,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  ),
-                ],
-              ),
+    final child = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: cs.primary, size: 26),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          if (onTap != null) ...[
+            const SizedBox(width: 8),
+            Icon(
+              Icons.chevron_right,
+              color: cs.onSurfaceVariant,
+              size: 22,
             ),
           ],
-        ),
+        ],
       ),
+    );
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: onTap == null
+          ? child
+          : InkWell(
+              onTap: onTap,
+              child: child,
+            ),
     );
   }
 }

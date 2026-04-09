@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import '../models/customer_list_filter.dart';
 import 'customers_screen.dart';
 import 'dashboard_screen.dart';
 import 'delivery_screen.dart';
@@ -22,22 +23,41 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  int _customersKey = 0;
+  CustomerListFilter? _customersInitialFilter;
+
+  void _openCustomersWithFilter(CustomerListFilter filter) {
+    setState(() {
+      _customersInitialFilter = filter;
+      _customersKey++;
+      _index = 1;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final deliveryOnly = repo.isDeliveryAgent;
     final screens = deliveryOnly
-        ? const [
-            DashboardScreen(key: ValueKey('shell_dash')),
-            DeliveryScreen(key: ValueKey('shell_delivery_agent')),
+        ? [
+            const DashboardScreen(
+              key: ValueKey('shell_dash'),
+              onOpenCustomersFilter: null,
+            ),
+            const DeliveryScreen(key: ValueKey('shell_delivery_agent')),
           ]
-        : const [
-            DashboardScreen(key: ValueKey('shell_dash')),
-            CustomersScreen(key: ValueKey('shell_customers')),
-            LeadsScreen(key: ValueKey('shell_leads')),
-            DeliveryScreen(key: ValueKey('shell_delivery')),
-            PaymentsScreen(key: ValueKey('shell_payments')),
+        : [
+            DashboardScreen(
+              key: const ValueKey('shell_dash'),
+              onOpenCustomersFilter: _openCustomersWithFilter,
+            ),
+            CustomersScreen(
+              key: ValueKey('shell_cust_$_customersKey'),
+              initialFilter: _customersInitialFilter,
+            ),
+            const LeadsScreen(key: ValueKey('shell_leads')),
+            const DeliveryScreen(key: ValueKey('shell_delivery')),
+            const PaymentsScreen(key: ValueKey('shell_payments')),
           ];
     final nav = deliveryOnly
         ? const [

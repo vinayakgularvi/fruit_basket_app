@@ -24,6 +24,13 @@ class AppRepository extends ChangeNotifier {
   static const _kSessionUsername = 'session_username';
   static const _kSessionRole = 'session_role';
 
+  static String _manualDeliveryOrderPrefsKey(DeliverySlot slot) {
+    final n = dateOnly(DateTime.now());
+    final day =
+        '${n.year}-${n.month.toString().padLeft(2, '0')}-${n.day.toString().padLeft(2, '0')}';
+    return 'delivery_route_order_${slot.name}_$day';
+  }
+
   final List<Customer> _customers = [];
   final List<Lead> _leads = [];
   final Map<String, bool> _deliveryDoneToday = {};
@@ -43,6 +50,8 @@ class AppRepository extends ChangeNotifier {
   String? _userRole;
   String? _currentUsername;
   List<String> _deliveryAgentUsernames = const [];
+  /// Saved customer id order for admin “Custom” route (per slot, per calendar day).
+  final Map<DeliverySlot, List<String>> _manualDeliveryOrderBySlot = {};
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
   bool _leadsReady = true;
@@ -73,6 +82,10 @@ class AppRepository extends ChangeNotifier {
 
   List<Customer> activeCustomers() =>
       _customers.where((c) => c.active).toList();
+
+  /// Active customers whose plan ends today (renew / inactive follow-up).
+  int get lastDayActiveCustomerCount =>
+      _customers.where(subscriptionLastDayToday).length;
 
   int get todayDeliveryCount {
     if (isDeliveryAgent && _currentUsername != null) {
@@ -147,15 +160,67 @@ class AppRepository extends ChangeNotifier {
 
   /// Active customers for [slot] (unsorted). Use for route optimization in UI.
   List<Customer> customersInDeliverySlot(DeliverySlot slot) {
-    final list = _customers
+    return _customers
         .where((c) => c.active && c.preferredSlot == slot)
         .toList();
-    if (isDeliveryAgent && _currentUsername != null) {
-      return list
-          .where((c) => c.assignedDeliveryAgentUsername == _currentUsername)
-          .toList();
+  }
+
+  /// Applies saved manual order; unknown ids are appended (by name). If nothing
+  /// saved, returns [fallbackOrdered] (e.g. time-optimized list).
+  List<Customer> orderedCustomersForCustomRoute(
+    DeliverySlot slot,
+    List<Customer> base,
+    List<Customer> fallbackOrdered,
+  ) {
+    final saved = _manualDeliveryOrderBySlot[slot];
+    if (saved == null || saved.isEmpty) {
+      return List<Customer>.from(fallbackOrdered);
     }
-    return list;
+    final byId = {for (final c in base) c.id: c};
+    final out = <Customer>[];
+    for (final id in saved) {
+      final c = byId.remove(id);
+      if (c != null) out.add(c);
+    }
+    final rest = byId.values.toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+    out.addAll(rest);
+    return out;
+  }
+
+  Future<void> setManualDeliveryRouteOrder(
+    DeliverySlot slot,
+    List<String> customerIdsInOrder,
+  ) async {
+    _manualDeliveryOrderBySlot[slot] = List<String>.from(customerIdsInOrder);
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _manualDeliveryOrderPrefsKey(slot),
+        customerIdsInOrder.join(','),
+      );
+    } catch (e, st) {
+      debugPrint('setManualDeliveryRouteOrder: $e\n$st');
+    }
+  }
+
+  Future<void> loadManualDeliveryRouteOrders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      for (final slot in DeliverySlot.values) {
+        final raw = prefs.getString(_manualDeliveryOrderPrefsKey(slot));
+        if (raw != null && raw.isNotEmpty) {
+          _manualDeliveryOrderBySlot[slot] =
+              raw.split(',').where((s) => s.isNotEmpty).toList();
+        } else {
+          _manualDeliveryOrderBySlot.remove(slot);
+        }
+      }
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('loadManualDeliveryRouteOrders: $e\n$st');
+    }
   }
 
   List<Customer> customersForSlot(
@@ -266,6 +331,7 @@ class AppRepository extends ChangeNotifier {
       await _ensureDefaultUser();
       await _refreshDeliveryAgentUsers();
       await _syncUserRoleFromFirestore();
+      await loadManualDeliveryRouteOrders();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
         'Firestore customers + leads (root + collectionGroup), database=$kFirestoreDatabaseId',
@@ -276,6 +342,7 @@ class AppRepository extends ChangeNotifier {
       _firebaseReady = false;
       _firestore = null;
       _seed();
+      await loadManualDeliveryRouteOrders();
       notifyListeners();
     }
   }
@@ -709,6 +776,33 @@ class AppRepository extends ChangeNotifier {
         adminApproved: true,
       ),
     );
+  }
+
+  /// Renews for one billing period: new segment starts the day after current
+  /// [endDate]. Clears period payment flags so the new period can be billed.
+  Future<void> recontinueSubscription(String customerId) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    final newStart = dateOnly(c.endDate).add(const Duration(days: 1));
+    final newEnd = endDateForBilling(newStart, c.billingPeriod);
+    await updateCustomer(
+      c.copyWith(
+        startDate: newStart,
+        endDate: newEnd,
+        paymentTrackedPeriodStart: null,
+        weeklyPeriodPaid: false,
+        monthlyAdvancePaid: false,
+        monthlyBalancePaid: false,
+        clearPendingDue: true,
+      ),
+    );
+  }
+
+  Future<void> setCustomerActive(String customerId, bool active) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    await updateCustomer(_customers[i].copyWith(active: active));
   }
 
   /// Marks [skippedDate] as skipped and extends [endDate] based on total skips.

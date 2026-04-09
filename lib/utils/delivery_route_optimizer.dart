@@ -291,3 +291,28 @@ OptimizedRouteResult optimizeDeliveryRouteByRequestedTime(
 
   return OptimizedRouteResult(customers: ordered, kmFromPrevious: legs);
 }
+
+/// Straight-line km per stop for an explicit [ordered] sequence (admin custom order).
+OptimizedRouteResult routeMetricsForCustomerOrder(
+  List<Customer> ordered,
+  LatLng start,
+) {
+  if (ordered.isEmpty) {
+    return const OptimizedRouteResult(customers: [], kmFromPrevious: []);
+  }
+  final legs = <double?>[];
+  var cur = start;
+  for (final c in ordered) {
+    final p = latLngFromCustomerAddress(c.address);
+    if (p != null) {
+      legs.add(haversineKm(cur, p));
+      cur = p;
+    } else {
+      legs.add(null);
+    }
+  }
+  return OptimizedRouteResult(
+    customers: List<Customer>.from(ordered),
+    kmFromPrevious: legs,
+  );
+}

@@ -1,6 +1,6 @@
 import '../models/customer.dart';
 
-enum DeliveryListSort { byRequestedTime, byOptimizedRoute }
+enum DeliveryListSort { byRequestedTime, byOptimizedRoute, custom }
 
 void sortDeliveryCustomers(List<Customer> list, DeliveryListSort sort) {
   switch (sort) {
@@ -9,6 +9,8 @@ void sortDeliveryCustomers(List<Customer> list, DeliveryListSort sort) {
     case DeliveryListSort.byOptimizedRoute:
       // Real order comes from [optimizeDeliveryRoute] on the delivery screen.
       list.sort((a, b) => a.name.compareTo(b.name));
+    case DeliveryListSort.custom:
+      break;
   }
 }
 

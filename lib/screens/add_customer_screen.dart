@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
 import '../models/customer.dart';
+import '../models/customer_list_filter.dart';
 import '../models/delivery_slot.dart';
 import '../models/payment.dart';
 import '../models/subscription_plan.dart';
@@ -374,7 +375,9 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       await repo.addCustomer(customer);
     }
     if (!mounted) return;
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(
+      editing == null ? CustomerListFilter.createdPendingApproval : null,
+    );
   }
 
   @override

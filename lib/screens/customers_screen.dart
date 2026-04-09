@@ -5,22 +5,19 @@ import '../data/app_repository.dart';
 import 'package:intl/intl.dart';
 
 import '../models/customer.dart';
+import '../models/customer_list_filter.dart';
 import '../models/delivery_slot.dart';
 import '../models/subscription_plan.dart';
+import '../utils/delivery_plan_dates.dart';
+import '../utils/phone_launch.dart';
 import 'add_customer_screen.dart';
 import '../widgets/manual_receipt_dialog.dart';
 
-enum _CustomerFilter {
-  all,
-  morning,
-  evening,
-  activeOnly,
-  inactiveOnly,
-  createdPendingApproval,
-}
-
 class CustomersScreen extends StatefulWidget {
-  const CustomersScreen({super.key});
+  const CustomersScreen({super.key, this.initialFilter});
+
+  /// Applied once when this widget is first created (e.g. after Home deep link).
+  final CustomerListFilter? initialFilter;
 
   @override
   State<CustomersScreen> createState() => _CustomersScreenState();
@@ -28,9 +25,15 @@ class CustomersScreen extends StatefulWidget {
 
 class _CustomersScreenState extends State<CustomersScreen> {
   final _search = TextEditingController();
-  _CustomerFilter _filter = _CustomerFilter.all;
+  late CustomerListFilter _filter;
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _filter = widget.initialFilter ?? CustomerListFilter.all;
+  }
 
   @override
   void dispose() {
@@ -134,10 +137,81 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  Future<void> _confirmRecontinueSubscription(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+    DateFormat df,
+  ) async {
+    final newStart = dateOnly(c.endDate).add(const Duration(days: 1));
+    final newEnd = endDateForBilling(newStart, c.billingPeriod);
+    final periodWord =
+        c.billingPeriod == BillingPeriod.weekly ? 'week' : 'month';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Recontinue subscription'),
+        content: Text(
+          'Add one $periodWord: new period ${df.format(newStart)} → '
+          '${df.format(newEnd)}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Recontinue'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await repo.recontinueSubscription(c.id);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${c.name}: subscription extended.')),
+    );
+  }
+
+  Future<void> _confirmSetInactive(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Mark inactive'),
+        content: Text(
+          'Mark "${c.name}" as inactive? They will be hidden from active '
+          'lists until turned active again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Inactive'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await repo.setCustomerActive(c.id, false);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${c.name} marked inactive.')),
+    );
+  }
+
   List<Customer> _apply(
     List<Customer> all,
     String query,
-    _CustomerFilter f,
+    CustomerListFilter f,
   ) {
     // `repo.customers` is unmodifiable; sort() requires a mutable list.
     var list = List<Customer>.from(all);
@@ -149,34 +223,38 @@ class _CustomersScreenState extends State<CustomersScreen> {
             c.address.toLowerCase().contains(q);
       }).toList();
     }
-    final hideInactiveByDefault = f == _CustomerFilter.all ||
-        f == _CustomerFilter.morning ||
-        f == _CustomerFilter.evening;
+    final hideInactiveByDefault = f == CustomerListFilter.all ||
+        f == CustomerListFilter.morning ||
+        f == CustomerListFilter.evening ||
+        f == CustomerListFilter.lastDayOfPlan;
     if (hideInactiveByDefault) {
       list = list.where((c) => c.active).toList();
     }
 
     switch (f) {
-      case _CustomerFilter.all:
+      case CustomerListFilter.all:
         break;
-      case _CustomerFilter.morning:
+      case CustomerListFilter.morning:
         list =
             list.where((c) => c.preferredSlot == DeliverySlot.morning).toList();
         break;
-      case _CustomerFilter.evening:
+      case CustomerListFilter.evening:
         list =
             list.where((c) => c.preferredSlot == DeliverySlot.evening).toList();
         break;
-      case _CustomerFilter.activeOnly:
+      case CustomerListFilter.activeOnly:
         list = list.where((c) => c.active).toList();
         break;
-      case _CustomerFilter.inactiveOnly:
+      case CustomerListFilter.inactiveOnly:
         list = list.where((c) => !c.active).toList();
         break;
-      case _CustomerFilter.createdPendingApproval:
+      case CustomerListFilter.createdPendingApproval:
         list = list
             .where((c) => c.customerCreated && !c.adminApproved)
             .toList();
+        break;
+      case CustomerListFilter.lastDayOfPlan:
+        list = list.where(subscriptionLastDayToday).toList();
         break;
     }
     list.sort((a, b) => a.name.compareTo(b.name));
@@ -241,9 +319,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ? null
           : FloatingActionButton.extended(
               onPressed: () async {
-                await Navigator.of(context).push<void>(
-                  MaterialPageRoute(builder: (_) => const AddCustomerScreen()),
+                final filter = await Navigator.of(context)
+                    .push<CustomerListFilter?>(
+                  MaterialPageRoute(
+                    builder: (_) => const AddCustomerScreen(),
+                  ),
                 );
+                if (filter != null && mounted) {
+                  setState(() => _filter = filter);
+                }
               },
               icon: const Icon(Icons.person_add),
               label: const Text('Add customer'),
@@ -278,39 +362,45 @@ class _CustomersScreenState extends State<CustomersScreen> {
               children: [
                 _FilterChip(
                   label: 'All',
-                  selected: _filter == _CustomerFilter.all,
-                  onSelected: () => setState(() => _filter = _CustomerFilter.all),
+                  selected: _filter == CustomerListFilter.all,
+                  onSelected: () => setState(() => _filter = CustomerListFilter.all),
                 ),
                 _FilterChip(
                   label: 'Morning',
-                  selected: _filter == _CustomerFilter.morning,
+                  selected: _filter == CustomerListFilter.morning,
                   onSelected: () =>
-                      setState(() => _filter = _CustomerFilter.morning),
+                      setState(() => _filter = CustomerListFilter.morning),
                 ),
                 _FilterChip(
                   label: 'Evening',
-                  selected: _filter == _CustomerFilter.evening,
+                  selected: _filter == CustomerListFilter.evening,
                   onSelected: () =>
-                      setState(() => _filter = _CustomerFilter.evening),
+                      setState(() => _filter = CustomerListFilter.evening),
                 ),
                 _FilterChip(
                   label: 'Active',
-                  selected: _filter == _CustomerFilter.activeOnly,
+                  selected: _filter == CustomerListFilter.activeOnly,
                   onSelected: () =>
-                      setState(() => _filter = _CustomerFilter.activeOnly),
+                      setState(() => _filter = CustomerListFilter.activeOnly),
                 ),
                 _FilterChip(
                   label: 'Inactive',
-                  selected: _filter == _CustomerFilter.inactiveOnly,
+                  selected: _filter == CustomerListFilter.inactiveOnly,
                   onSelected: () =>
-                      setState(() => _filter = _CustomerFilter.inactiveOnly),
+                      setState(() => _filter = CustomerListFilter.inactiveOnly),
                 ),
                 _FilterChip(
                   label: 'Pending approval',
-                  selected: _filter == _CustomerFilter.createdPendingApproval,
+                  selected: _filter == CustomerListFilter.createdPendingApproval,
                   onSelected: () => setState(
-                    () => _filter = _CustomerFilter.createdPendingApproval,
+                    () => _filter = CustomerListFilter.createdPendingApproval,
                   ),
+                ),
+                _FilterChip(
+                  label: 'Last day',
+                  selected: _filter == CustomerListFilter.lastDayOfPlan,
+                  onSelected: () =>
+                      setState(() => _filter = CustomerListFilter.lastDayOfPlan),
                 ),
               ],
             ),
@@ -445,6 +535,104 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                             fontWeight: FontWeight.w500,
                                           ),
                                     ),
+                                    if (subscriptionLastDayToday(c)) ...[
+                                      const SizedBox(height: 10),
+                                      Material(
+                                        color: cs.tertiaryContainer
+                                            .withValues(alpha: 0.65),
+                                        borderRadius:
+                                            BorderRadius.circular(12),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Icon(
+                                                    Icons.today_outlined,
+                                                    size: 20,
+                                                    color: cs.onTertiaryContainer,
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      'Last day of subscription',
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .labelLarge
+                                                          ?.copyWith(
+                                                            color: cs
+                                                                .onTertiaryContainer,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w700,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 10),
+                                              Wrap(
+                                                spacing: 8,
+                                                runSpacing: 8,
+                                                children: [
+                                                  FilledButton.tonalIcon(
+                                                    onPressed: c.phone
+                                                            .trim()
+                                                            .isEmpty
+                                                        ? null
+                                                        : () =>
+                                                            openCustomerPhoneDialer(
+                                                              context,
+                                                              c.phone,
+                                                            ),
+                                                    icon: const Icon(
+                                                      Icons.call,
+                                                      size: 20,
+                                                    ),
+                                                    label: const Text('Call'),
+                                                  ),
+                                                  FilledButton.icon(
+                                                    onPressed: () =>
+                                                        _confirmRecontinueSubscription(
+                                                      context,
+                                                      repo,
+                                                      c,
+                                                      df,
+                                                    ),
+                                                    icon: const Icon(
+                                                      Icons.event_repeat,
+                                                      size: 20,
+                                                    ),
+                                                    label: const Text(
+                                                      'Recontinue',
+                                                    ),
+                                                  ),
+                                                  OutlinedButton.icon(
+                                                    onPressed: () =>
+                                                        _confirmSetInactive(
+                                                      context,
+                                                      repo,
+                                                      c,
+                                                    ),
+                                                    icon: const Icon(
+                                                      Icons
+                                                          .person_off_outlined,
+                                                      size: 20,
+                                                    ),
+                                                    label: const Text(
+                                                      'Inactive',
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                     if (c.skippedDeliveryDays > 0) ...[
                                       const SizedBox(height: 2),
                                       Text(
