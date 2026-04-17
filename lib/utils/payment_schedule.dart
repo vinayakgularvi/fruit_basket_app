@@ -120,7 +120,7 @@ bool _isMonthlyPendingKind(String? k) =>
   final pStart = periodStartForDate(c, today);
   if (pStart == null) return null;
 
-  if (c.billingPeriod == BillingPeriod.weekly) {
+  if (c.billingPeriod.usesWeeklyStylePayment) {
     if (effectiveWeeklyPaid(c, pStart)) return null;
     if (periodTrackedMatchesPeriodStart(c, pStart) &&
         c.pendingDueKind == PaymentCollectionKind.weeklyFull.name &&
@@ -129,13 +129,17 @@ bool _isMonthlyPendingKind(String? k) =>
       return (
         kind: PaymentCollectionKind.weeklyFull,
         amountRupees: c.pendingDueRemainingRupees!,
-        label: 'Weekly plan',
+        label: c.billingPeriod == BillingPeriod.trial2Day
+            ? '2-day trial'
+            : 'Weekly plan',
       );
     }
     return (
       kind: PaymentCollectionKind.weeklyFull,
       amountRupees: c.planPriceRupees,
-      label: 'Weekly plan',
+      label: c.billingPeriod == BillingPeriod.trial2Day
+          ? '2-day trial'
+          : 'Weekly plan',
     );
   }
 

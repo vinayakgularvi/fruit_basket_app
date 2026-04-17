@@ -1,9 +1,8 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../models/lead.dart';
+import 'local_notifications_plugin.dart';
 import 'new_leads_notifications_content.dart';
-
-final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
 
 const _channelId = 'fruit_basket_new_leads';
 const _channelName = 'New leads';
@@ -18,9 +17,9 @@ Future<void> initNewLeadNotifications() async {
       requestSoundPermission: true,
     ),
   );
-  await _plugin.initialize(settings: settings);
+  await localNotificationsPlugin.initialize(settings: settings);
 
-  final android = _plugin.resolvePlatformSpecificImplementation<
+  final android = localNotificationsPlugin.resolvePlatformSpecificImplementation<
       AndroidFlutterLocalNotificationsPlugin>();
   await android?.createNotificationChannel(
     const AndroidNotificationChannel(
@@ -30,8 +29,20 @@ Future<void> initNewLeadNotifications() async {
       importance: Importance.high,
     ),
   );
+  await android?.createNotificationChannel(
+    const AndroidNotificationChannel(
+      _deliveryChannelId,
+      _deliveryChannelName,
+      description: _deliveryChannelDesc,
+      importance: Importance.defaultImportance,
+    ),
+  );
   await android?.requestNotificationsPermission();
 }
+
+const _deliveryChannelId = 'fruit_basket_delivery_updates';
+const _deliveryChannelName = 'Delivery updates';
+const _deliveryChannelDesc = 'When a delivery agent marks deliveries complete';
 
 Future<void> showNewLeadNotifications(List<Lead> leads) async {
   final content = newLeadsNotificationContent(leads);
@@ -39,7 +50,7 @@ Future<void> showNewLeadNotifications(List<Lead> leads) async {
 
   final id = DateTime.now().millisecondsSinceEpoch.remainder(0x7fffffff);
 
-  await _plugin.show(
+  await localNotificationsPlugin.show(
     id: id,
     title: content.title,
     body: content.body,

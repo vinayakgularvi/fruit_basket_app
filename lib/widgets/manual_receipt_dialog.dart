@@ -185,8 +185,11 @@ Future<void> showManualReceiptDialog({
 }
 
 String _planSummary(Customer c) {
-  final unit = c.billingPeriod == BillingPeriod.weekly ? 'week' : 'month';
-  final period =
-      c.billingPeriod == BillingPeriod.weekly ? 'Weekly' : 'Monthly';
+  final unit = c.billingPeriod.priceUnitWord;
+  final period = switch (c.billingPeriod) {
+    BillingPeriod.weekly => 'Weekly',
+    BillingPeriod.monthly => 'Monthly',
+    BillingPeriod.trial2Day => '2-day trial',
+  };
   return '${c.planTier.title} · $period · ₹${c.planPriceRupees}/$unit';
 }

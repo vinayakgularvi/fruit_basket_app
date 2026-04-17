@@ -145,8 +145,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   ) async {
     final newStart = dateOnly(c.endDate).add(const Duration(days: 1));
     final newEnd = endDateForBilling(newStart, c.billingPeriod);
-    final periodWord =
-        c.billingPeriod == BillingPeriod.weekly ? 'week' : 'month';
+    final periodWord = c.billingPeriod.periodNoun;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -445,8 +444,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       final cs = Theme.of(context).colorScheme;
                       final df = DateFormat.yMMMd();
                       final dtf = DateFormat.yMMMd().add_jm();
-                      final periodShort =
-                          c.billingPeriod == BillingPeriod.weekly ? 'wk' : 'mo';
+                      final periodShort = c.billingPeriod.listAbbrev;
                       return GestureDetector(
                         onLongPress: repo.isAdmin && !_selectionMode
                             ? () => setState(() {

@@ -7,6 +7,7 @@ import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'theme/app_theme.dart';
 import 'utils/new_leads_notifications.dart';
+import 'widgets/delivery_completion_notification_listener.dart';
 import 'widgets/new_leads_notification_listener.dart';
 
 Future<void> main() async {
@@ -47,7 +48,11 @@ class _AuthGate extends StatelessWidget {
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     return repo.isLoggedIn
-        ? const NewLeadsNotificationListener(child: HomeShell())
+        ? const NewLeadsNotificationListener(
+            child: DeliveryCompletionNotificationListener(
+              child: HomeShell(),
+            ),
+          )
         : const LoginScreen();
   }
 }

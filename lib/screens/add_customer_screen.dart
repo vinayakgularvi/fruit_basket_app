@@ -207,7 +207,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   }
 
   List<_InitialPaymentOption> get _allowedInitialPaymentOptions {
-    if (_billingPeriod == BillingPeriod.weekly) {
+    if (_billingPeriod.usesWeeklyStylePayment) {
       return const [
         _InitialPaymentOption.fullPayment,
         _InitialPaymentOption.weeklyFull,
@@ -306,7 +306,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
         lastPaymentKind = 'full_payment';
         clearPendingDue = fullPay;
 
-        if (customer.billingPeriod == BillingPeriod.weekly) {
+        if (customer.billingPeriod.usesWeeklyStylePayment) {
           weeklyPaid = fullPay;
           if (!fullPay) {
             pendingDueKind = PaymentCollectionKind.weeklyFull.name;
@@ -432,6 +432,11 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
             SegmentedButton<BillingPeriod>(
               segments: const [
                 ButtonSegment(
+                  value: BillingPeriod.trial2Day,
+                  label: Text('2-day trial'),
+                  icon: Icon(Icons.timer_outlined),
+                ),
+                ButtonSegment(
                   value: BillingPeriod.weekly,
                   label: Text('Weekly'),
                   icon: Icon(Icons.date_range_outlined),
@@ -456,9 +461,14 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              _billingPeriod == BillingPeriod.weekly
-                  ? '6 delivery days per period (Sunday holiday)'
-                  : '26 delivery days per period (Sunday holiday)',
+              switch (_billingPeriod) {
+                BillingPeriod.trial2Day =>
+                  '2 delivery days in the trial (Sunday holiday)',
+                BillingPeriod.weekly =>
+                  '6 delivery days per period (Sunday holiday)',
+                BillingPeriod.monthly =>
+                  '26 delivery days per period (Sunday holiday)',
+              },
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: cs.onSurfaceVariant,
                   ),
@@ -466,8 +476,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
             const SizedBox(height: 12),
             ...PlanTier.values.map((tier) {
               final price = planPriceRupees(tier, _billingPeriod);
-              final unit =
-                  _billingPeriod == BillingPeriod.weekly ? 'week' : 'month';
+              final unit = _billingPeriod.priceUnitWord;
               final selected = _planTier == tier;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -768,7 +777,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                             style: Theme.of(context).textTheme.labelLarge,
                           ),
                           Text(
-                            '₹$_planPrice / ${_billingPeriod == BillingPeriod.weekly ? "week" : "month"}',
+                            '₹$_planPrice / ${_billingPeriod.priceUnitWord}',
                             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                   fontWeight: FontWeight.bold,
                                 ),

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
 import '../models/customer.dart';
+import '../models/delivery_completion_event.dart';
 import '../models/lead.dart';
 import '../models/delivery_slot.dart';
 import '../models/payment.dart' show Payment, PaymentCollectionKind;
@@ -43,6 +44,12 @@ class AppRepository extends ChangeNotifier {
       StreamController<List<Lead>>.broadcast();
   Set<String> _leadIdsAtLastMerge = {};
   bool _leadsInitialSnapshotDone = false;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _deliveryCompletionSub;
+  final StreamController<List<DeliveryCompletionEvent>>
+      _newDeliveryCompletionsController =
+      StreamController<List<DeliveryCompletionEvent>>.broadcast();
+  Set<String> _deliveryEventIdsAtLastMerge = {};
+  bool _deliveryEventsInitialSnapshotDone = false;
   FirebaseFirestore? _firestore;
   bool _firebaseReady = false;
   bool _isLoggedIn = false;
@@ -77,6 +84,10 @@ class AppRepository extends ChangeNotifier {
 
   /// Fires when new lead document(s) appear after the first snapshot (not on initial load).
   Stream<List<Lead>> get newLeads => _newLeadsController.stream;
+
+  /// New delivery completion docs from a delivery agent — for admin local notifications.
+  Stream<List<DeliveryCompletionEvent>> get newDeliveryCompletions =>
+      _newDeliveryCompletionsController.stream;
 
   List<Customer> get customers => List.unmodifiable(_customers);
 
@@ -124,6 +135,10 @@ class AppRepository extends ChangeNotifier {
     for (final c in activeCustomers()) {
       if (c.billingPeriod == BillingPeriod.weekly) {
         sum += c.planPriceRupees;
+      } else if (c.billingPeriod == BillingPeriod.trial2Day) {
+        sum += c.planPriceRupees *
+            (BillingPeriod.weekly.deliveryDays /
+                BillingPeriod.trial2Day.deliveryDays);
       } else {
         sum += c.planPriceRupees *
             (BillingPeriod.weekly.deliveryDays /
@@ -236,15 +251,91 @@ class AppRepository extends ChangeNotifier {
       _deliveryDoneToday[customerId] ?? false;
 
   void toggleDeliveryDone(String customerId) {
-    _deliveryDoneToday[customerId] = !isDeliveryChecked(customerId);
+    final wasChecked = isDeliveryChecked(customerId);
+    _deliveryDoneToday[customerId] = !wasChecked;
     notifyListeners();
+    if (!wasChecked &&
+        _firebaseReady &&
+        _firestore != null &&
+        _currentUsername != null) {
+      Customer? customer;
+      for (final c in _customers) {
+        if (c.id == customerId) {
+          customer = c;
+          break;
+        }
+      }
+      if (customer != null) {
+        unawaited(_recordDeliveryStopCompleted(customer));
+      }
+    }
   }
 
   void markAllDeliveriesDone(DeliverySlot slot, bool value) {
-    for (final c in customersInDeliverySlot(slot)) {
+    final list = customersInDeliverySlot(slot);
+    for (final c in list) {
       _deliveryDoneToday[c.id] = value;
     }
     notifyListeners();
+    if (value &&
+        list.isNotEmpty &&
+        _firebaseReady &&
+        _firestore != null &&
+        _currentUsername != null) {
+      unawaited(_recordDeliveryMarkAll(slot, list.length));
+    }
+  }
+
+  String _calendarDayString(DateTime date) {
+    final d = dateOnly(date);
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _recordDeliveryStopCompleted(Customer c) async {
+    final fs = _firestore;
+    if (fs == null) return;
+    final username = _currentUsername;
+    if (username == null) return;
+    final day = _calendarDayString(dateOnly(DateTime.now()));
+    final role = _userRole?.trim().toLowerCase() ?? 'admin';
+    try {
+      await fs.collection('delivery_completion_events').add({
+        'createdAt': FieldValue.serverTimestamp(),
+        'calendarDay': day,
+        'kind': 'stop',
+        'customerId': c.id,
+        'customerName': c.name,
+        'slot': c.preferredSlot.name,
+        'markedBy': username,
+        'markedByRole': role,
+      });
+    } on FirebaseException catch (e, st) {
+      debugPrint('_recordDeliveryStopCompleted: $e\n$st');
+    }
+  }
+
+  Future<void> _recordDeliveryMarkAll(DeliverySlot slot, int count) async {
+    final fs = _firestore;
+    if (fs == null) return;
+    final username = _currentUsername;
+    if (username == null) return;
+    final day = _calendarDayString(dateOnly(DateTime.now()));
+    final role = _userRole?.trim().toLowerCase() ?? 'admin';
+    try {
+      await fs.collection('delivery_completion_events').add({
+        'createdAt': FieldValue.serverTimestamp(),
+        'calendarDay': day,
+        'kind': 'mark_all',
+        'customerName': '',
+        'completedCount': count,
+        'slot': slot.name,
+        'markedBy': username,
+        'markedByRole': role,
+      });
+    } on FirebaseException catch (e, st) {
+      debugPrint('_recordDeliveryMarkAll: $e\n$st');
+    }
   }
 
   int completedCountForSlot(DeliverySlot slot) {
@@ -297,6 +388,8 @@ class AppRepository extends ChangeNotifier {
       _leads.clear();
       _leadIdsAtLastMerge = {};
       _leadsInitialSnapshotDone = false;
+      _deliveryEventIdsAtLastMerge = {};
+      _deliveryEventsInitialSnapshotDone = false;
       _lastLeadsRootSnap = null;
       _lastLeadsGroupSnap = null;
       // Root `leads` and subcollections `users/*/leads` — merge by document path.
@@ -331,6 +424,20 @@ class AppRepository extends ChangeNotifier {
       await _ensureDefaultUser();
       await _refreshDeliveryAgentUsers();
       await _syncUserRoleFromFirestore();
+      _deliveryCompletionSub?.cancel();
+      _deliveryCompletionSub = _firestore!
+          .collection('delivery_completion_events')
+          .where(
+            'calendarDay',
+            isEqualTo: _calendarDayString(dateOnly(DateTime.now())),
+          )
+          .snapshots()
+          .listen(
+            _onDeliveryCompletionSnapshot,
+            onError: (Object e, StackTrace st) {
+              debugPrint('Firestore delivery_completion_events: $e\n$st');
+            },
+          );
       await loadManualDeliveryRouteOrders();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
@@ -531,10 +638,31 @@ class AppRepository extends ChangeNotifier {
       } else {
         await _clearSession();
       }
+      if (ok && _firebaseReady && _firestore != null) {
+        await _resyncDeliveryCompletionBaseline();
+      }
       return ok;
     } finally {
       _authLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// After login, align seen delivery-event ids so we do not notify for history.
+  Future<void> _resyncDeliveryCompletionBaseline() async {
+    if (!_firebaseReady || _firestore == null) return;
+    try {
+      final snap = await _firestore!
+          .collection('delivery_completion_events')
+          .where(
+            'calendarDay',
+            isEqualTo: _calendarDayString(dateOnly(DateTime.now())),
+          )
+          .get();
+      _deliveryEventIdsAtLastMerge = snap.docs.map((d) => d.id).toSet();
+      _deliveryEventsInitialSnapshotDone = true;
+    } on FirebaseException catch (e, st) {
+      debugPrint('_resyncDeliveryCompletionBaseline: $e\n$st');
     }
   }
 
@@ -544,6 +672,8 @@ class AppRepository extends ChangeNotifier {
     _currentUsername = null;
     _leadIdsAtLastMerge = {};
     _leadsInitialSnapshotDone = false;
+    _deliveryEventIdsAtLastMerge = {};
+    _deliveryEventsInitialSnapshotDone = false;
     unawaited(_clearSession());
     notifyListeners();
   }
@@ -606,6 +736,33 @@ class AppRepository extends ChangeNotifier {
       '(root docs=${root?.docs.length ?? "-"}, '
       'group docs=${group?.docs.length ?? "-"})',
     );
+  }
+
+  void _onDeliveryCompletionSnapshot(
+    QuerySnapshot<Map<String, dynamic>> snap,
+  ) {
+    final wasInitialDone = _deliveryEventsInitialSnapshotDone;
+    final byId = <String, DeliveryCompletionEvent>{};
+    for (final d in snap.docs) {
+      final e = DeliveryCompletionEvent.fromFirestore(d);
+      if (e != null) byId[d.id] = e;
+    }
+    final afterIds = byId.keys.toSet();
+
+    if (wasInitialDone && isAdmin) {
+      final added = afterIds.difference(_deliveryEventIdsAtLastMerge);
+      if (added.isNotEmpty && !_newDeliveryCompletionsController.isClosed) {
+        final fresh = added.map((id) => byId[id]!).where(
+              (e) => e.markedByRole == 'delivery_agent',
+            ).toList()
+          ..sort((a, b) => a.customerName.compareTo(b.customerName));
+        if (fresh.isNotEmpty) {
+          _newDeliveryCompletionsController.add(fresh);
+        }
+      }
+    }
+    _deliveryEventIdsAtLastMerge = afterIds;
+    _deliveryEventsInitialSnapshotDone = true;
   }
 
   void _onLeadsRootSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
@@ -695,8 +852,12 @@ class AppRepository extends ChangeNotifier {
     _customerSub?.cancel();
     _leadsRootSub?.cancel();
     _leadsGroupSub?.cancel();
+    _deliveryCompletionSub?.cancel();
     if (!_newLeadsController.isClosed) {
       _newLeadsController.close();
+    }
+    if (!_newDeliveryCompletionsController.isClosed) {
+      _newDeliveryCompletionsController.close();
     }
     super.dispose();
   }
@@ -966,7 +1127,7 @@ class AppRepository extends ChangeNotifier {
     }
 
     final kind = due?.kind ??
-        (c.billingPeriod == BillingPeriod.weekly
+        (c.billingPeriod.usesWeeklyStylePayment
             ? PaymentCollectionKind.weeklyFull
             : PaymentCollectionKind.monthlyAdvance);
     await updateCustomer(
@@ -1025,7 +1186,7 @@ class AppRepository extends ChangeNotifier {
         preferredSlot: DeliverySlot.morning,
         planTier: PlanTier.standard,
         billingPeriod: BillingPeriod.monthly,
-        planPriceRupees: 2199,
+        planPriceRupees: 2599,
         startDate: s1,
         endDate: _end(s1, BillingPeriod.monthly),
         requestedDeliveryTime: '',
@@ -1044,7 +1205,7 @@ class AppRepository extends ChangeNotifier {
         preferredSlot: DeliverySlot.evening,
         planTier: PlanTier.basic,
         billingPeriod: BillingPeriod.weekly,
-        planPriceRupees: 343,
+        planPriceRupees: 443,
         startDate: s2,
         endDate: _end(s2, BillingPeriod.weekly),
         requestedDeliveryTime: '',
@@ -1063,7 +1224,7 @@ class AppRepository extends ChangeNotifier {
         preferredSlot: DeliverySlot.morning,
         planTier: PlanTier.premium,
         billingPeriod: BillingPeriod.monthly,
-        planPriceRupees: 2999,
+        planPriceRupees: 3399,
         startDate: s3,
         endDate: _end(s3, BillingPeriod.monthly),
         requestedDeliveryTime: '',
@@ -1081,7 +1242,7 @@ class AppRepository extends ChangeNotifier {
         preferredSlot: DeliverySlot.evening,
         planTier: PlanTier.basic,
         billingPeriod: BillingPeriod.monthly,
-        planPriceRupees: 1299,
+        planPriceRupees: 1699,
         startDate: s4,
         endDate: _end(s4, BillingPeriod.monthly),
         requestedDeliveryTime: '',
@@ -1116,7 +1277,7 @@ class AppRepository extends ChangeNotifier {
         mobile: '9986732351',
         name: 'Sample lead (local)',
         plan: 'standard',
-        price: '₹2,199',
+        price: '₹2,599',
         source: 'healthy_meal_whatsapp',
       ),
     ];
