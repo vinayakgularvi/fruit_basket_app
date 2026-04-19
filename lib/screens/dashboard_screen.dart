@@ -64,11 +64,66 @@ class DashboardScreen extends StatelessWidget {
     passCtrl.dispose();
   }
 
+  Future<void> _showAddFruitBuyerDialog(BuildContext context) async {
+    final userCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add fruit buyer'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: userCtrl,
+              decoration: const InputDecoration(labelText: 'Username'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      final u = userCtrl.text.trim();
+      final p = passCtrl.text.trim();
+      if (u.isNotEmpty && p.isNotEmpty) {
+        await context.read<AppRepository>().addFruitBuyerUser(
+              username: u,
+              password: p,
+            );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Fruit buyer "$u" added')),
+          );
+        }
+      }
+    }
+    userCtrl.dispose();
+    passCtrl.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final currency = NumberFormat.currency(symbol: '₹', decimalDigits: 0);
     final deliveryOnly = repo.isDeliveryAgent;
+    final fruitBuyerHome =
+        repo.isFruitBuyer && !repo.isAdmin && !repo.isDeliveryAgent;
 
     return Scaffold(
       appBar: AppBar(
@@ -90,13 +145,22 @@ class DashboardScreen extends StatelessWidget {
           ),
           if (repo.isAdmin) ...[
             const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
-                onPressed: () => _showAddDeliveryAgentDialog(context),
-                icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Add delivery agent'),
-              ),
+            Wrap(
+              spacing: 12,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _showAddDeliveryAgentDialog(context),
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: const Text('Add delivery agent'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _showAddFruitBuyerDialog(context),
+                  icon: const Icon(Icons.shopping_basket_outlined),
+                  label: const Text('Add fruit buyer'),
+                ),
+              ],
             ),
           ],
           const SizedBox(height: 24),
@@ -137,7 +201,24 @@ class DashboardScreen extends StatelessWidget {
                             '₹${repo.perOrderPayoutRupees} per order × ${repo.todayDeliveryCount}',
                       ),
                     ]
-                  : [
+                  : fruitBuyerHome
+                      ? [
+                          _StatCard(
+                            icon: Icons.shopping_basket_outlined,
+                            label: 'To buy',
+                            value: repo.neededFruitsLoading
+                                ? '…'
+                                : '${repo.pendingNeededFruitCount}',
+                            subtitle: 'items still to purchase',
+                          ),
+                          const _StatCard(
+                            icon: Icons.storefront_outlined,
+                            label: 'Procurement',
+                            value: 'Buy fruits',
+                            subtitle: 'Add or edit what to purchase',
+                          ),
+                        ]
+                      : [
                       _StatCard(
                         icon: Icons.local_shipping,
                         label: 'Today’s deliveries',
@@ -207,7 +288,25 @@ class DashboardScreen extends StatelessWidget {
               );
             },
           ),
-          if (!deliveryOnly) ...[
+          if (fruitBuyerHome) ...[
+            const SizedBox(height: 28),
+            Text(
+              'Quick tips',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Use the Buy fruits tab to maintain the shopping list. '
+                  'Pull down on that screen to refresh from the server.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            ),
+          ],
+          if (!deliveryOnly && !fruitBuyerHome) ...[
             const SizedBox(height: 28),
             Text(
               'Quick tips',

@@ -9,6 +9,7 @@ import '../firebase_options.dart';
 import '../models/customer.dart';
 import '../models/delivery_completion_event.dart';
 import '../models/lead.dart';
+import '../models/needed_fruit.dart';
 import '../models/delivery_slot.dart';
 import '../models/payment.dart' show Payment, PaymentCollectionKind;
 import '../models/subscription_plan.dart';
@@ -17,6 +18,7 @@ import '../utils/delivery_route_sort.dart';
 import '../utils/payment_schedule.dart';
 import 'customer_firestore.dart';
 import 'leads_firestore.dart';
+import 'needed_fruit_firestore.dart';
 
 class AppRepository extends ChangeNotifier {
   AppRepository();
@@ -34,10 +36,12 @@ class AppRepository extends ChangeNotifier {
 
   final List<Customer> _customers = [];
   final List<Lead> _leads = [];
+  final List<NeededFruit> _neededFruits = [];
   final Map<String, bool> _deliveryDoneToday = {};
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _customerSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsRootSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsGroupSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _neededFruitsSub;
   QuerySnapshot<Map<String, dynamic>>? _lastLeadsRootSnap;
   QuerySnapshot<Map<String, dynamic>>? _lastLeadsGroupSnap;
   final StreamController<List<Lead>> _newLeadsController =
@@ -62,6 +66,7 @@ class AppRepository extends ChangeNotifier {
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
   bool _leadsReady = true;
+  bool _neededFruitsReady = true;
 
   bool get usesFirestore => _firebaseReady;
   bool get isLoggedIn => _isLoggedIn;
@@ -71,6 +76,11 @@ class AppRepository extends ChangeNotifier {
   bool get isDeliveryAgent =>
       _userRole?.trim().toLowerCase() == 'delivery_agent';
   bool get isAdmin => _userRole?.trim().toLowerCase() == 'admin';
+  /// Role values from Firestore: `fruit-buyer` or `fruit_buyer`.
+  bool get isFruitBuyer {
+    final r = _userRole?.trim().toLowerCase() ?? '';
+    return r == 'fruit-buyer' || r == 'fruit_buyer';
+  }
   List<String> get deliveryAgentUsernames =>
       List.unmodifiable(_deliveryAgentUsernames);
 
@@ -80,7 +90,69 @@ class AppRepository extends ChangeNotifier {
   /// True while Firestore is connected but the first `leads` snapshot has not arrived yet.
   bool get leadsLoading => usesFirestore && !_leadsReady;
 
+  /// True while Firestore is connected but the first `needed_fruits` snapshot has not arrived.
+  bool get neededFruitsLoading => usesFirestore && !_neededFruitsReady;
+
   List<Lead> get leads => List.unmodifiable(_leads);
+
+  List<NeededFruit> get neededFruits => List.unmodifiable(_neededFruits);
+
+  int get pendingNeededFruitCount =>
+      _neededFruits.where((e) => !e.purchased).length;
+
+  /// Fruit names from past [needed_fruits] rows (bought + to-buy), ranked by frequency
+  /// then recency; [prefix] filters case-insensitively (prefix match preferred).
+  List<String> suggestedPurchaseFruitNames(String prefix, {int limit = 12}) {
+    final p = prefix.trim().toLowerCase();
+    final count = <String, int>{};
+    final display = <String, String>{};
+    for (final f in _neededFruits.reversed) {
+      final raw = f.fruitName.trim();
+      if (raw.isEmpty) continue;
+      final k = raw.toLowerCase();
+      count[k] = (count[k] ?? 0) + 1;
+      display[k] = raw;
+    }
+    final keys = count.keys.toList();
+    keys.sort((a, b) {
+      if (p.isNotEmpty) {
+        final as = a.startsWith(p);
+        final bs = b.startsWith(p);
+        if (as != bs) return as ? -1 : 1;
+        final ac = a.contains(p);
+        final bc = b.contains(p);
+        if (ac != bc) return ac ? -1 : 1;
+      }
+      final byFreq = (count[b]!).compareTo(count[a]!);
+      if (byFreq != 0) return byFreq;
+      return a.compareTo(b);
+    });
+    return keys.take(limit).map((k) => display[k]!).toList();
+  }
+
+  /// Quantity lines from history for [fruitName] (exact case-insensitive match).
+  /// If [fruitName] is empty, uses all fruits (still deduped, most recent first).
+  /// [prefix] filters the quantity string (case-insensitive contains).
+  List<String> suggestedPurchaseQuantityNotes({
+    required String fruitName,
+    String prefix = '',
+    int limit = 10,
+  }) {
+    final fn = fruitName.trim().toLowerCase();
+    final pr = prefix.trim().toLowerCase();
+    final seen = <String>{};
+    final out = <String>[];
+    for (final f in _neededFruits.reversed) {
+      if (fn.isNotEmpty && f.fruitName.trim().toLowerCase() != fn) continue;
+      final q = f.quantityNotes.trim();
+      if (q.isEmpty || seen.contains(q)) continue;
+      if (pr.isNotEmpty && !q.toLowerCase().contains(pr)) continue;
+      seen.add(q);
+      out.add(q);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
 
   /// Fires when new lead document(s) appear after the first snapshot (not on initial load).
   Stream<List<Lead>> get newLeads => _newLeadsController.stream;
@@ -403,6 +475,11 @@ class AppRepository extends ChangeNotifier {
                 'Firestore collection("leads") stream error (check rules for '
                 'match /leads/{leadId}): $e\n$st',
               );
+              // #region agent log
+              debugPrint(
+                '[debug-90664b] hypothesisId=H1 leads_root denied/error: $e',
+              );
+              // #endregion
               _leadsReady = true;
               notifyListeners();
             },
@@ -417,6 +494,11 @@ class AppRepository extends ChangeNotifier {
                 'Firestore collectionGroup("leads") stream error (check rules '
                 'for subcollection leads under users): $e\n$st',
               );
+              // #region agent log
+              debugPrint(
+                '[debug-90664b] hypothesisId=H1 leads_group denied/error: $e',
+              );
+              // #endregion
               _leadsReady = true;
               notifyListeners();
             },
@@ -438,10 +520,27 @@ class AppRepository extends ChangeNotifier {
               debugPrint('Firestore delivery_completion_events: $e\n$st');
             },
           );
+      _neededFruitsSub?.cancel();
+      _neededFruitsReady = false;
+      _neededFruitsSub = _firestore!
+          .collection('needed_fruits')
+          .orderBy('fruitName')
+          .snapshots()
+          .listen(
+            _onNeededFruitsSnapshot,
+            onError: (Object e, StackTrace st) {
+              debugPrint(
+                'Firestore needed_fruits stream error (check rules for '
+                'match /needed_fruits/{id}): $e\n$st',
+              );
+              _neededFruitsReady = true;
+              notifyListeners();
+            },
+          );
       await loadManualDeliveryRouteOrders();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
-        'Firestore customers + leads (root + collectionGroup), database=$kFirestoreDatabaseId',
+        'Firestore customers + leads + needed_fruits, database=$kFirestoreDatabaseId',
       );
       notifyListeners();
     } catch (e, st) {
@@ -525,6 +624,12 @@ class AppRepository extends ChangeNotifier {
         password: 'alfa123',
         role: 'delivery_agent',
       ),
+      (
+        id: 'fruit_buyer',
+        username: 'fruit_buyer',
+        password: 'fruitbuyer123',
+        role: 'fruit-buyer',
+      ),
     ];
     for (final u in defaults) {
       final ref = users.doc(u.id);
@@ -587,6 +692,25 @@ class AppRepository extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> addFruitBuyerUser({
+    required String username,
+    required String password,
+  }) async {
+    final u = username.trim();
+    final p = password.trim();
+    if (u.isEmpty || p.isEmpty) return;
+    if (_firestore == null) return;
+    await _firestore!.collection('users').doc(u).set({
+      'username': u,
+      'password': p,
+      'role': 'fruit-buyer',
+      'active': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    notifyListeners();
+  }
+
   Future<bool> loginWithUsernamePassword(
     String username,
     String password,
@@ -599,12 +723,16 @@ class AppRepository extends ChangeNotifier {
         final isAdmin =
             username == 'fruit_basket' && password == 'fruit_basket.26';
         final isAgent = username == 'alfa' && password == 'alfa123';
-        final ok = isAdmin || isAgent;
+        final isBuyer =
+            username == 'fruit_buyer' && password == 'fruitbuyer123';
+        final ok = isAdmin || isAgent || isBuyer;
         _isLoggedIn = ok;
         _currentUsername = ok ? username : null;
         _userRole = isAdmin
             ? 'admin'
-            : (isAgent ? 'delivery_agent' : null);
+            : (isAgent
+                ? 'delivery_agent'
+                : (isBuyer ? 'fruit-buyer' : null));
         if (ok) {
           await _saveSession(
             username: username,
@@ -640,6 +768,9 @@ class AppRepository extends ChangeNotifier {
       }
       if (ok && _firebaseReady && _firestore != null) {
         await _resyncDeliveryCompletionBaseline();
+        // After logout we clear `_neededFruits`; the snapshot stream does not
+        // replay until data changes — refetch so fruit_buyer sees admin’s list.
+        await refreshNeededFruits();
       }
       return ok;
     } finally {
@@ -670,6 +801,7 @@ class AppRepository extends ChangeNotifier {
     _isLoggedIn = false;
     _userRole = null;
     _currentUsername = null;
+    _neededFruits.clear();
     _leadIdsAtLastMerge = {};
     _leadsInitialSnapshotDone = false;
     _deliveryEventIdsAtLastMerge = {};
@@ -736,6 +868,12 @@ class AppRepository extends ChangeNotifier {
       '(root docs=${root?.docs.length ?? "-"}, '
       'group docs=${group?.docs.length ?? "-"})',
     );
+    // #region agent log
+    debugPrint(
+      '[debug-90664b] hypothesisId=H1+H3 leads_merge count=${_leads.length} '
+      'rootDocs=${root?.docs.length} groupDocs=${group?.docs.length}',
+    );
+    // #endregion
   }
 
   void _onDeliveryCompletionSnapshot(
@@ -779,6 +917,33 @@ class AppRepository extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _sortNeededFruitsLocal() {
+    final pending = _neededFruits.where((e) => !e.purchased).toList()
+      ..sort((a, b) {
+        final c = a.fruitName.toLowerCase().compareTo(b.fruitName.toLowerCase());
+        if (c != 0) return c;
+        return a.id.compareTo(b.id);
+      });
+    final bought = _neededFruits.where((e) => e.purchased).toList()
+      ..sort((a, b) {
+        final at = a.purchasedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bt = b.purchasedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bt.compareTo(at);
+      });
+    _neededFruits
+      ..clear()
+      ..addAll([...pending, ...bought]);
+  }
+
+  void _onNeededFruitsSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
+    _neededFruits
+      ..clear()
+      ..addAll(neededFruitsFromQueryDocs(snap.docs));
+    _sortNeededFruitsLocal();
+    _neededFruitsReady = true;
+    notifyListeners();
+  }
+
   /// One-shot read (also used by pull-to-refresh). The real-time stream keeps updating after.
   Future<void> refreshCustomers() async {
     if (!_firebaseReady || _firestore == null) {
@@ -815,6 +980,139 @@ class AppRepository extends ChangeNotifier {
     } on FirebaseException catch (e, st) {
       debugPrint('refreshLeads failed: ${e.code} ${e.message}\n$st');
     }
+  }
+
+  Future<void> refreshNeededFruits() async {
+    if (!_firebaseReady || _firestore == null) {
+      notifyListeners();
+      return;
+    }
+    try {
+      final snap = await _firestore!
+          .collection('needed_fruits')
+          .orderBy('fruitName')
+          .get();
+      _neededFruits
+        ..clear()
+        ..addAll(neededFruitsFromQueryDocs(snap.docs));
+      _sortNeededFruitsLocal();
+      _neededFruitsReady = true;
+      notifyListeners();
+      debugPrint('Firestore: refreshed needed_fruits (${_neededFruits.length})');
+    } on FirebaseException catch (e, st) {
+      debugPrint('refreshNeededFruits failed: ${e.code} ${e.message}\n$st');
+    }
+  }
+
+  Future<void> addNeededFruit({
+    required String fruitName,
+    required String quantityNotes,
+    String notes = '',
+  }) async {
+    if (!isAdmin && !isFruitBuyer) return;
+    final fn = fruitName.trim();
+    final qn = quantityNotes.trim();
+    final nt = notes.trim();
+    if (fn.isEmpty || qn.isEmpty) return;
+    if (_firestore == null) {
+      _neededFruits.add(
+        NeededFruit(
+          id: 'local_${DateTime.now().microsecondsSinceEpoch}',
+          fruitName: fn,
+          quantityNotes: qn,
+          notes: nt,
+          purchased: false,
+        ),
+      );
+      _sortNeededFruitsLocal();
+      notifyListeners();
+      return;
+    }
+    await _firestore!.collection('needed_fruits').add({
+      'fruitName': fn,
+      'quantityNotes': qn,
+      'notes': nt,
+      'purchased': false,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> updateNeededFruit(
+    String id, {
+    required String fruitName,
+    required String quantityNotes,
+    String notes = '',
+  }) async {
+    if (!isAdmin && !isFruitBuyer) return;
+    final fn = fruitName.trim();
+    final qn = quantityNotes.trim();
+    final nt = notes.trim();
+    if (fn.isEmpty || qn.isEmpty) return;
+    if (_firestore == null) {
+      final i = _neededFruits.indexWhere((x) => x.id == id);
+      if (i < 0 || _neededFruits[i].purchased) return;
+      _neededFruits[i] = _neededFruits[i].copyWith(
+        fruitName: fn,
+        quantityNotes: qn,
+        notes: nt,
+      );
+      _sortNeededFruitsLocal();
+      notifyListeners();
+      return;
+    }
+    final ref = _firestore!.collection('needed_fruits').doc(id);
+    final snap = await ref.get();
+    if (!snap.exists) return;
+    final cur = neededFruitFromFirestore(snap);
+    if (cur.purchased) return;
+    await ref.update({
+      'fruitName': fn,
+      'quantityNotes': qn,
+      'notes': nt,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Marks a list row as bought with weight, optional rate/kg, and total cost.
+  Future<void> recordNeededFruitPurchase({
+    required String id,
+    required double totalWeightKg,
+    double? pricePerKgRupees,
+    required double totalCostRupees,
+  }) async {
+    if (!isAdmin && !isFruitBuyer) return;
+    if (totalWeightKg <= 0 || totalCostRupees < 0) return;
+    if (_firestore == null) {
+      final i = _neededFruits.indexWhere((x) => x.id == id);
+      if (i < 0 || _neededFruits[i].purchased) return;
+      _neededFruits[i] = _neededFruits[i].copyWith(
+        purchased: true,
+        purchasedAt: DateTime.now(),
+        pricePerKgRupees: pricePerKgRupees,
+        totalWeightKg: totalWeightKg,
+        totalCostRupees: totalCostRupees,
+      );
+      _sortNeededFruitsLocal();
+      notifyListeners();
+      return;
+    }
+    final ref = _firestore!.collection('needed_fruits').doc(id);
+    final snap = await ref.get();
+    if (!snap.exists) return;
+    if (neededFruitFromFirestore(snap).purchased) return;
+    final data = <String, dynamic>{
+      'purchased': true,
+      'purchasedAt': FieldValue.serverTimestamp(),
+      'totalWeightKg': totalWeightKg,
+      'totalCostRupees': totalCostRupees,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (pricePerKgRupees != null && pricePerKgRupees > 0) {
+      data['pricePerKgRupees'] = pricePerKgRupees;
+    } else {
+      data['pricePerKgRupees'] = FieldValue.delete();
+    }
+    await ref.update(data);
   }
 
   /// Persists `called` / `notInterested` on the lead document ([leadPath] is full
@@ -1262,6 +1560,34 @@ class AppRepository extends ChangeNotifier {
       ..clear()
       ..addAll(_sampleLeadsLocal());
     _leadsReady = true;
+
+    _neededFruits
+      ..clear()
+      ..addAll(_sampleNeededFruitsLocal());
+    _neededFruitsReady = true;
+  }
+
+  List<NeededFruit> _sampleNeededFruitsLocal() {
+    return [
+      const NeededFruit(
+        id: 'local_nf1',
+        fruitName: 'Banana',
+        quantityNotes: '6 kg',
+        notes: 'Robusta',
+        purchased: false,
+      ),
+      NeededFruit(
+        id: 'local_nf2',
+        fruitName: 'Mango',
+        quantityNotes: '1 crate',
+        notes: '',
+        purchased: true,
+        purchasedAt: DateTime(2026, 1, 10, 14, 30),
+        pricePerKgRupees: 120,
+        totalWeightKg: 5,
+        totalCostRupees: 600,
+      ),
+    ];
   }
 
   List<Lead> _sampleLeadsLocal() {

@@ -12,5 +12,15 @@ service cloud.firestore {
     match /delivery_completion_events/{eventId} {
       allow read, write: if true;
     }
+    match /needed_fruits/{fruitId} {
+      allow read, write: if true;
+    }
+    // Root leads + per-user subcollections (merged in app via collectionGroup).
+    match /leads/{leadId} {
+      allow read, write: if true;
+    }
+    match /users/{userId}/leads/{leadId} {
+      allow read, write: if true;
+    }
   }
 }
