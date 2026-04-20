@@ -475,11 +475,6 @@ class AppRepository extends ChangeNotifier {
                 'Firestore collection("leads") stream error (check rules for '
                 'match /leads/{leadId}): $e\n$st',
               );
-              // #region agent log
-              debugPrint(
-                '[debug-90664b] hypothesisId=H1 leads_root denied/error: $e',
-              );
-              // #endregion
               _leadsReady = true;
               notifyListeners();
             },
@@ -494,11 +489,6 @@ class AppRepository extends ChangeNotifier {
                 'Firestore collectionGroup("leads") stream error (check rules '
                 'for subcollection leads under users): $e\n$st',
               );
-              // #region agent log
-              debugPrint(
-                '[debug-90664b] hypothesisId=H1 leads_group denied/error: $e',
-              );
-              // #endregion
               _leadsReady = true;
               notifyListeners();
             },
@@ -868,12 +858,6 @@ class AppRepository extends ChangeNotifier {
       '(root docs=${root?.docs.length ?? "-"}, '
       'group docs=${group?.docs.length ?? "-"})',
     );
-    // #region agent log
-    debugPrint(
-      '[debug-90664b] hypothesisId=H1+H3 leads_merge count=${_leads.length} '
-      'rootDocs=${root?.docs.length} groupDocs=${group?.docs.length}',
-    );
-    // #endregion
   }
 
   void _onDeliveryCompletionSnapshot(
