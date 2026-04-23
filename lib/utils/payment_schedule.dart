@@ -90,8 +90,9 @@ bool _monthlyPeriodMarkedPaid(Customer c, DateTime periodStart) =>
 
 /// Rough credit already applied toward the current monthly period (legacy + partials).
 int _monthlyAlreadyCreditedRupees(Customer c, DateTime periodStart) {
+  final total = c.totalPlanPriceRupees;
   if (_monthlyPeriodMarkedPaid(c, periodStart)) {
-    return c.planPriceRupees;
+    return total;
   }
 
   // Legacy: only “advance” flag set for this period (old two-part monthly).
@@ -103,10 +104,10 @@ int _monthlyAlreadyCreditedRupees(Customer c, DateTime periodStart) {
         last > 0 &&
         (lk == PaymentCollectionKind.monthlyAdvance.name ||
             lk == PaymentCollectionKind.monthlyBalance.name)) {
-      return last > c.planPriceRupees ? c.planPriceRupees : last;
+      return last > total ? total : last;
     }
     const cap = _kLegacyMonthlyAdvanceAssumedRupees;
-    return c.planPriceRupees < cap ? c.planPriceRupees : cap;
+    return total < cap ? total : cap;
   }
 
   return 0;
@@ -152,7 +153,7 @@ bool _isMonthlyPendingKind(String? k) =>
     }
     return (
       kind: PaymentCollectionKind.weeklyFull,
-      amountRupees: c.planPriceRupees,
+      amountRupees: c.totalPlanPriceRupees,
       label: c.billingPeriod == BillingPeriod.trial2Day
           ? '2-day trial'
           : 'Weekly plan',
@@ -174,7 +175,7 @@ bool _isMonthlyPendingKind(String? k) =>
   }
 
   final credited = _monthlyAlreadyCreditedRupees(c, pStart);
-  final due = c.planPriceRupees - credited;
+  final due = c.totalPlanPriceRupees - credited;
   if (due <= 0) return null;
 
   return (
@@ -188,10 +189,10 @@ bool _isMonthlyPendingKind(String? k) =>
 int scheduledAmountForKind(Customer c, PaymentCollectionKind kind) {
   switch (kind) {
     case PaymentCollectionKind.weeklyFull:
-      return c.planPriceRupees;
+      return c.totalPlanPriceRupees;
     case PaymentCollectionKind.monthlyAdvance:
     case PaymentCollectionKind.monthlyBalance:
-      return c.planPriceRupees;
+      return c.totalPlanPriceRupees;
   }
 }
 

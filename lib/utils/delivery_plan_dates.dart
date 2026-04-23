@@ -4,6 +4,15 @@ import '../models/subscription_plan.dart';
 /// Normalizes to date-only (local).
 DateTime dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
+/// True when [calendarDay] is in [c.skippedDeliveryDates] (date-only match).
+bool customerSkipsDeliveryOnDate(Customer c, DateTime calendarDay) {
+  final d = dateOnly(calendarDay);
+  for (final s in c.skippedDeliveryDates) {
+    if (dateOnly(s) == d) return true;
+  }
+  return false;
+}
+
 /// [Customer.endDate] is today (calendar) and the customer is active.
 bool subscriptionLastDayToday(Customer c) {
   if (!c.active) return false;

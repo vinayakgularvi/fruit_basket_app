@@ -44,6 +44,10 @@ Map<String, dynamic> customerToFirestore(Customer c) {
     'planTier': c.planTier.name,
     'billingPeriod': c.billingPeriod.name,
     'planPriceRupees': c.planPriceRupees,
+    'secondaryPlanTier': c.secondaryPlanTier?.name,
+    'secondaryPlanPriceRupees': c.secondaryPlanTier != null
+        ? c.secondaryPlanPriceRupees
+        : null,
     'startDate': Timestamp.fromDate(
       DateTime(c.startDate.year, c.startDate.month, c.startDate.day),
     ),
@@ -113,9 +117,21 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
   final ed = _coerceDate(d['endDate'], id, 'endDate');
 
   final price = d['planPriceRupees'];
-  final planPriceRupees = price is num
+  final primaryPlanPriceRupees = price is num
       ? price.toInt()
       : int.tryParse(price?.toString() ?? '') ?? 0;
+
+  final secName = d['secondaryPlanTier'] as String?;
+  final secTier = secName == null ? null : tier(secName);
+  final secPriceRaw = d['secondaryPlanPriceRupees'];
+  final secPriceParsed = secPriceRaw is num
+      ? secPriceRaw.toInt()
+      : int.tryParse(secPriceRaw?.toString() ?? '');
+  final secondaryPlanPriceRupees = secTier == null
+      ? 0
+      : (secPriceParsed != null && secPriceParsed > 0
+          ? secPriceParsed
+          : planPriceRupees(secTier, period(d['billingPeriod'] as String?)));
 
   return Customer(
     id: id,
@@ -125,7 +141,9 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     preferredSlot: slot(d['preferredSlot'] as String?),
     planTier: tier(d['planTier'] as String?),
     billingPeriod: period(d['billingPeriod'] as String?),
-    planPriceRupees: planPriceRupees,
+    planPriceRupees: primaryPlanPriceRupees,
+    secondaryPlanTier: secTier,
+    secondaryPlanPriceRupees: secondaryPlanPriceRupees,
     startDate: DateTime(sd.year, sd.month, sd.day),
     endDate: DateTime(ed.year, ed.month, ed.day),
     requestedDeliveryTime: _coerceString(d['requestedDeliveryTime']),

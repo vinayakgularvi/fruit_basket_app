@@ -24,7 +24,7 @@ Future<void> showManualReceiptDialog({
     text: _planSummary(customer),
   );
   final amountCtrl = TextEditingController(
-    text: '${customer.planPriceRupees}',
+    text: '${customer.totalPlanPriceRupees}',
   );
   var collectedAt = DateTime.now();
   final dateFmt = DateFormat('dd MMM yyyy');
@@ -191,5 +191,11 @@ String _planSummary(Customer c) {
     BillingPeriod.monthly => 'Monthly',
     BillingPeriod.trial2Day => '2-day trial',
   };
-  return '${c.planTier.title} · $period · ₹${c.planPriceRupees}/$unit';
+  final sec = c.secondaryPlanTier;
+  if (sec == null) {
+    return '${c.planTier.title} · $period · ₹${c.planPriceRupees}/$unit';
+  }
+  return '${c.planTier.title} + ${sec.title} · $period · '
+      '₹${c.planPriceRupees} + ₹${c.secondaryPlanPriceRupees}/$unit '
+      '(total ₹${c.totalPlanPriceRupees})';
 }

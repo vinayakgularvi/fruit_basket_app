@@ -129,6 +129,8 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   final _initialPaymentAmount = TextEditingController();
   /// Optional override; when empty, [planPriceRupees] uses catalog for tier + billing.
   final _discountedPlanPrice = TextEditingController();
+  /// Optional override for second plan price.
+  final _discountedSecondaryPlanPrice = TextEditingController();
   DeliverySlot _slot = DeliverySlot.morning;
 
   String _deliveryTimePreset = '';
@@ -136,6 +138,8 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
 
   BillingPeriod _billingPeriod = BillingPeriod.monthly;
   PlanTier _planTier = PlanTier.basic;
+  bool _hasSecondaryPlan = false;
+  PlanTier _secondaryPlanTier = PlanTier.alkalineInfusedWater1L;
   late DateTime _startDate;
   bool _active = true;
   bool _addInitialPayment = false;
@@ -166,6 +170,15 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       if (e.planPriceRupees != catalog) {
         _discountedPlanPrice.text = e.planPriceRupees.toString();
       }
+      if (e.secondaryPlanTier != null) {
+        _hasSecondaryPlan = true;
+        _secondaryPlanTier = e.secondaryPlanTier!;
+        final cat2 = planPriceRupees(e.secondaryPlanTier!, e.billingPeriod);
+        if (e.secondaryPlanPriceRupees != cat2) {
+          _discountedSecondaryPlanPrice.text =
+              e.secondaryPlanPriceRupees.toString();
+        }
+      }
     } else {
       _startDate = dateOnly(DateTime.now());
     }
@@ -189,6 +202,17 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   DateTime get _endDate => endDateForBilling(_startDate, _billingPeriod);
 
   int get _planPrice => planPriceRupees(_planTier, _billingPeriod);
+
+  int get _secondaryCatalogPrice =>
+      planPriceRupees(_secondaryPlanTier, _billingPeriod);
+
+  /// Saved second-plan price when enabled; else 0.
+  int get _effectiveSecondaryPlanPriceRupees {
+    if (!_hasSecondaryPlan) return 0;
+    final t = _discountedSecondaryPlanPrice.text.trim();
+    if (t.isEmpty) return _secondaryCatalogPrice;
+    return int.tryParse(t) ?? _secondaryCatalogPrice;
+  }
 
   /// Saved plan price: optional discounted/custom amount, else catalog.
   int get _effectivePlanPriceRupees {
@@ -226,6 +250,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     _deliveryTimeCustom.dispose();
     _initialPaymentAmount.dispose();
     _discountedPlanPrice.dispose();
+    _discountedSecondaryPlanPrice.dispose();
     _notes.dispose();
     super.dispose();
   }
@@ -268,6 +293,17 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_hasSecondaryPlan && _effectiveSecondaryPlanPriceRupees < 1) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Second plan needs a valid price (at least ₹1), or clear second plan.',
+          ),
+        ),
+      );
+      return;
+    }
     final time = _resolvedRequestedDeliveryTime;
     if (time.length > 120) {
       if (!mounted) return;
@@ -291,6 +327,9 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       planTier: _planTier,
       billingPeriod: _billingPeriod,
       planPriceRupees: _effectivePlanPriceRupees,
+      secondaryPlanTier: _hasSecondaryPlan ? _secondaryPlanTier : null,
+      secondaryPlanPriceRupees:
+          _hasSecondaryPlan ? _effectiveSecondaryPlanPriceRupees : 0,
       startDate: dateOnly(_startDate),
       endDate: _endDate,
       requestedDeliveryTime: time,
@@ -325,7 +364,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       String lastPaymentKind = '';
 
       if (_initialPaymentOption == _InitialPaymentOption.fullPayment) {
-        final fullDue = customer.planPriceRupees;
+        final fullDue = customer.totalPlanPriceRupees;
         final fullPay = initialAmt >= fullDue;
         lastPaymentKind = 'full_payment';
         clearPendingDue = fullPay;
@@ -337,7 +376,6 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
             pendingDueRemaining = fullDue - initialAmt;
           }
         } else {
-          final fullDue = customer.planPriceRupees;
           if (fullPay) {
             monthlyAdvancePaid = true;
             monthlyBalancePaid = true;
@@ -571,6 +609,68 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               validator: _validateOptionalDiscountedPlanPrice,
             ),
+            const SizedBox(height: 8),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Second plan on same subscription'),
+              subtitle: const Text(
+                'Same billing period; adds another tier for payments and '
+                'kitchen pack counts.',
+              ),
+              value: _hasSecondaryPlan,
+              onChanged: (v) => setState(() {
+                _hasSecondaryPlan = v;
+                if (!v) _discountedSecondaryPlanPrice.clear();
+              }),
+            ),
+            if (_hasSecondaryPlan) ...[
+              const SizedBox(height: 4),
+              InputDecorator(
+                decoration: const InputDecoration(
+                  labelText: 'Second plan tier',
+                  border: OutlineInputBorder(),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<PlanTier>(
+                    isExpanded: true,
+                    value: _secondaryPlanTier,
+                    items: PlanTier.values
+                        .map(
+                          (tier) => DropdownMenuItem<PlanTier>(
+                            value: tier,
+                            child: Text(
+                              '${tier.title} — '
+                              '₹${planPriceRupees(tier, _billingPeriod)}/'
+                              '${_billingPeriod.priceUnitWord}',
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setState(() => _secondaryPlanTier = v);
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _discountedSecondaryPlanPrice,
+                keyboardType: TextInputType.number,
+                maxLength: 9,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: 'Second plan price (₹, optional)',
+                  hintText: 'Leave blank for catalog price',
+                  helperText:
+                      'Catalog is ₹$_secondaryCatalogPrice / ${_billingPeriod.priceUnitWord}',
+                  prefixText: '₹ ',
+                  counterText: '',
+                ),
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                validator: _validateOptionalDiscountedPlanPrice,
+              ),
+            ],
             const SizedBox(height: 8),
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -829,27 +929,52 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                               _effectivePlanPriceRupees != _planPrice) ...[
                             const SizedBox(height: 4),
                             Text(
-                              'Saved as: ₹$_effectivePlanPriceRupees / ${_billingPeriod.priceUnitWord}',
+                              'Primary saved: ₹$_effectivePlanPriceRupees / ${_billingPeriod.priceUnitWord}',
                               style: Theme.of(context)
                                   .textTheme
-                                  .titleMedium
+                                  .titleSmall
                                   ?.copyWith(
-                                    fontWeight: FontWeight.bold,
+                                    fontWeight: FontWeight.w700,
                                     color: cs.primary,
                                   ),
                             ),
                           ] else ...[
                             const SizedBox(height: 2),
                             Text(
-                              '₹$_planPrice / ${_billingPeriod.priceUnitWord}',
+                              'Primary: ₹$_effectivePlanPriceRupees / ${_billingPeriod.priceUnitWord}',
                               style: Theme.of(context)
                                   .textTheme
-                                  .titleMedium
+                                  .titleSmall
                                   ?.copyWith(
-                                    fontWeight: FontWeight.bold,
+                                    fontWeight: FontWeight.w600,
                                   ),
                             ),
                           ],
+                          if (_hasSecondaryPlan) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              '+ ${_secondaryPlanTier.title} · '
+                              '₹$_effectiveSecondaryPlanPriceRupees / ${_billingPeriod.priceUnitWord}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                          ],
+                          const SizedBox(height: 6),
+                          Text(
+                            'Total / ${_billingPeriod.priceUnitWord}: '
+                            '₹${_effectivePlanPriceRupees + (_hasSecondaryPlan ? _effectiveSecondaryPlanPriceRupees : 0)}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: cs.primary,
+                                ),
+                          ),
                         ],
                       ),
                     ),

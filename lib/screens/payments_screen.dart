@@ -51,8 +51,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     final pStart = periodStartForDate(c, anchor);
     if (pStart == null) return 0;
     final due = paymentDueForCustomer(c, anchor);
-    if (due == null) return c.planPriceRupees;
-    return (c.planPriceRupees - due.amountRupees).clamp(0, c.planPriceRupees);
+    final total = c.totalPlanPriceRupees;
+    if (due == null) return total;
+    return (total - due.amountRupees).clamp(0, total);
   }
 
   /// Outstanding for today’s rules (0 if none due).
@@ -155,7 +156,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
             decoration: InputDecoration(
               labelText: 'Amount paid (₹)',
               helperText:
-                  'Plan is ₹${c.planPriceRupees} · adjusts what is still due',
+                  'Plan total is ₹${c.totalPlanPriceRupees} · adjusts what is still due',
             ),
             autofocus: true,
           ),
@@ -217,7 +218,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     var totalPaid = 0;
     var totalRemaining = 0;
     for (final c in repo.activeCustomers()) {
-      totalPlanAmount += c.planPriceRupees;
+      totalPlanAmount += c.totalPlanPriceRupees;
       totalPaid += _paidInCurrentPeriod(c, today);
       totalRemaining += _remainingForCustomer(c, today);
     }
@@ -529,7 +530,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                       children: [
                                         _AmountBadge(
                                           label: 'Total',
-                                          value: currency.format(c.planPriceRupees),
+                                          value: currency.format(
+                                            c.totalPlanPriceRupees,
+                                          ),
                                           color: cs.tertiary,
                                         ),
                                         _AmountBadge(

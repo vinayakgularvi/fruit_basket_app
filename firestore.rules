@@ -15,11 +15,16 @@ service cloud.firestore {
     match /needed_fruits/{fruitId} {
       allow read, write: if true;
     }
-    // Root leads + per-user subcollections (merged in app via collectionGroup).
+    // Shared custom delivery stop order (morning / evening) for all devices.
+    match /delivery_route_order/{docId} {
+      allow read, write: if true;
+    }
+    // Leads: root + nested (e.g. users/*/leads/*). collectionGroup("leads") and
+    // collectionGroup().get() require every matched path to be allowed.
     match /leads/{leadId} {
       allow read, write: if true;
     }
-    match /users/{userId}/leads/{leadId} {
+    match /{path=**}/leads/{leadId} {
       allow read, write: if true;
     }
   }

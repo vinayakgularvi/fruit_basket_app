@@ -31,6 +31,8 @@ class Customer {
     this.pendingDueRemainingRupees,
     this.customerCreated = true,
     this.adminApproved = false,
+    this.secondaryPlanTier,
+    this.secondaryPlanPriceRupees = 0,
   });
 
   final String id;
@@ -42,6 +44,10 @@ class Customer {
   final BillingPeriod billingPeriod;
   /// Snapshot price at signup (rupees).
   final int planPriceRupees;
+  /// Optional second product on the same billing period (e.g. fruit + alkaline).
+  final PlanTier? secondaryPlanTier;
+  /// Per-period rupees for [secondaryPlanTier]; must be > 0 when tier is set.
+  final int secondaryPlanPriceRupees;
   final DateTime startDate;
   final DateTime endDate;
   /// Preferred time window within the slot (e.g. "8–10 AM"), free text.
@@ -72,6 +78,11 @@ class Customer {
   final bool customerCreated;
   final bool adminApproved;
 
+  /// Combined period price for payments, receipts, and due calculations.
+  int get totalPlanPriceRupees =>
+      planPriceRupees +
+      (secondaryPlanTier != null ? secondaryPlanPriceRupees : 0);
+
   Customer copyWith({
     String? id,
     String? name,
@@ -101,8 +112,11 @@ class Customer {
     int? pendingDueRemainingRupees,
     bool? customerCreated,
     bool? adminApproved,
+    PlanTier? secondaryPlanTier,
+    int? secondaryPlanPriceRupees,
     bool clearPendingDue = false,
     bool clearAssignedDeliveryAgent = false,
+    bool clearSecondaryPlan = false,
   }) {
     return Customer(
       id: id ?? this.id,
@@ -143,6 +157,12 @@ class Customer {
           : (pendingDueRemainingRupees ?? this.pendingDueRemainingRupees),
       customerCreated: customerCreated ?? this.customerCreated,
       adminApproved: adminApproved ?? this.adminApproved,
+      secondaryPlanTier: clearSecondaryPlan
+          ? null
+          : (secondaryPlanTier ?? this.secondaryPlanTier),
+      secondaryPlanPriceRupees: clearSecondaryPlan
+          ? 0
+          : (secondaryPlanPriceRupees ?? this.secondaryPlanPriceRupees),
     );
   }
 }

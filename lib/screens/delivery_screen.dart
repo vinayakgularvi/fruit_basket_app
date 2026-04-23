@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
@@ -25,8 +26,8 @@ class _DeliveryScreenState extends State<DeliveryScreen>
   DeliverySlot _slot = DeliverySlot.morning;
   final _search = TextEditingController();
 
-  /// Admin-only: custom uses saved drag order and allows reorder; by time uses
-  /// the optimized route (same as delivery view).
+  /// Admin: custom uses saved drag order and allows reorder; by time uses the
+  /// optimized route. Delivery agents follow the saved custom order (no drag).
   _AdminRouteOrder _adminRouteOrder = _AdminRouteOrder.custom;
 
   /// Default route start for leg-distance metrics (no in-app editor).
@@ -70,6 +71,117 @@ class _DeliveryScreenState extends State<DeliveryScreen>
     return noUrls.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   }
 
+  Widget _routeAppBarTitle(AppRepository repo) {
+    final d = repo.deliveryRouteCalendarDay;
+    final today = dateOnly(DateTime.now());
+    if (d == today) {
+      return const Text('Today’s route');
+    }
+    return Text('Route · ${DateFormat.yMMMd().format(d)}');
+  }
+
+  Future<void> _pickDeliveryRouteDay(
+    BuildContext context,
+    AppRepository repo,
+  ) async {
+    final initial = repo.deliveryRouteCalendarDay;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now().add(const Duration(days: 14)),
+    );
+    if (picked != null && context.mounted) {
+      repo.setDeliveryRouteCalendarDay(picked);
+    }
+  }
+
+  Future<void> _skipDeliveryForStop(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+  ) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final day = repo.deliveryRouteCalendarDay;
+    try {
+      await repo.skipDeliveryDate(c.id, day);
+      if (!context.mounted) return;
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            '${c.name} skipped for ${DateFormat.yMMMd().format(day)}',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Could not save skip: $e')),
+      );
+    }
+  }
+
+  static const _skipOnRouteButtonStyle = ButtonStyle(
+    visualDensity: VisualDensity.compact,
+    padding: WidgetStatePropertyAll(
+      EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+    ),
+    minimumSize: WidgetStatePropertyAll(Size(44, 32)),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
+  /// Drag handle (when [includeDragHandle]) and a Skip control for the route day.
+  Widget _dragHandleAndSkipColumn({
+    required BuildContext context,
+    required AppRepository repo,
+    required Customer c,
+    required ColorScheme cs,
+    required bool includeDragHandle,
+    int? reorderIndex,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          if (includeDragHandle && reorderIndex != null) ...[
+            ReorderableDragStartListener(
+              index: reorderIndex,
+              child: Tooltip(
+                message: 'Drag to reorder',
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Material(
+                    elevation: 0,
+                    borderRadius: BorderRadius.circular(10),
+                    color: cs.surfaceContainerHigh,
+                    child: SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: Icon(
+                        Icons.drag_handle,
+                        size: 24,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+          ] else
+            const SizedBox(height: 6),
+          TextButton(
+            style: _skipOnRouteButtonStyle,
+            onPressed: () => unawaited(_skipDeliveryForStop(context, repo, c)),
+            child: const Text('Skip'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _deliveryStopCard({
     Key? key,
     required BuildContext context,
@@ -78,6 +190,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
     required int routeIndex,
     required double? legKm,
     required ColorScheme cs,
+    bool showSkipBelowDelivered = false,
   }) {
     final delivered = repo.isDeliveryChecked(c.id);
     final hasMapsLink = mapsUriFromAddress(c.address) != null;
@@ -253,6 +366,15 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                     onPressed: () => repo.toggleDeliveryDone(c.id),
                     child: const Text('Delivered'),
                   ),
+                if (showSkipBelowDelivered) ...[
+                  const SizedBox(height: 6),
+                  TextButton(
+                    style: _skipOnRouteButtonStyle,
+                    onPressed: () =>
+                        unawaited(_skipDeliveryForStop(context, repo, c)),
+                    child: const Text('Skip'),
+                  ),
+                ],
               ],
             ),
           ],
@@ -264,7 +386,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
-    final base = repo.customersInDeliverySlot(_slot);
+    final base = repo.customersOnDeliveryRoute(_slot);
     const start = _kRouteStart;
     final isAdmin = repo.isAdmin;
     final isDeliveryAgent = repo.isDeliveryAgent;
@@ -303,23 +425,30 @@ class _DeliveryScreenState extends State<DeliveryScreen>
     final routeTotalKm =
         routeKm.whereType<double>().fold(0.0, (a, b) => a + b);
     final allowDragReorder =
-        isAdmin && useCustomOrder && _search.text.trim().isEmpty;
+        useCustomOrder && isAdmin && _search.text.trim().isEmpty;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Today’s route'),
-        actions: repo.isDeliveryAgent
-            ? null
-            : [
-                TextButton(
-                  onPressed: list.isEmpty
-                      ? null
-                      : () {
-                          repo.markAllDeliveriesDone(_slot, true);
-                        },
-                  child: const Text('Mark all'),
-                ),
-              ],
+        title: isDeliveryAgent
+            ? const Text('Today’s route')
+            : _routeAppBarTitle(repo),
+        actions: [
+          if (!isDeliveryAgent)
+            IconButton(
+              tooltip: 'Choose date',
+              icon: const Icon(Icons.calendar_month_outlined),
+              onPressed: () => _pickDeliveryRouteDay(context, repo),
+            ),
+          if (!repo.isDeliveryAgent)
+            TextButton(
+              onPressed: list.isEmpty
+                  ? null
+                  : () {
+                      repo.markAllDeliveriesDone(_slot, true);
+                    },
+              child: const Text('Mark all'),
+            ),
+        ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -477,16 +606,32 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                                               routeIndex < routeKm.length
                                           ? routeKm[routeIndex]
                                           : null;
-                                      return ReorderableDragStartListener(
-                                        index: i,
+                                      return Material(
                                         key: ValueKey(c.id),
-                                        child: _deliveryStopCard(
-                                          context: context,
-                                          repo: repo,
-                                          c: c,
-                                          routeIndex: routeIndex,
-                                          legKm: legKm,
-                                          cs: cs,
+                                        color: Colors.transparent,
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(
+                                              child: _deliveryStopCard(
+                                                context: context,
+                                                repo: repo,
+                                                c: c,
+                                                routeIndex: routeIndex,
+                                                legKm: legKm,
+                                                cs: cs,
+                                              ),
+                                            ),
+                                            _dragHandleAndSkipColumn(
+                                              context: context,
+                                              repo: repo,
+                                              c: c,
+                                              cs: cs,
+                                              includeDragHandle: true,
+                                              reorderIndex: i,
+                                            ),
+                                          ],
                                         ),
                                       );
                                     },
@@ -510,14 +655,44 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                                               routeIndex < routeKm.length
                                           ? routeKm[routeIndex]
                                           : null;
-                                      return _deliveryStopCard(
+                                      if (isDeliveryAgent) {
+                                        return _deliveryStopCard(
+                                          key: ValueKey(c.id),
+                                          context: context,
+                                          repo: repo,
+                                          c: c,
+                                          routeIndex: routeIndex,
+                                          legKm: legKm,
+                                          cs: cs,
+                                          showSkipBelowDelivered: true,
+                                        );
+                                      }
+                                      return Material(
                                         key: ValueKey(c.id),
-                                        context: context,
-                                        repo: repo,
-                                        c: c,
-                                        routeIndex: routeIndex,
-                                        legKm: legKm,
-                                        cs: cs,
+                                        color: Colors.transparent,
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(
+                                              child: _deliveryStopCard(
+                                                context: context,
+                                                repo: repo,
+                                                c: c,
+                                                routeIndex: routeIndex,
+                                                legKm: legKm,
+                                                cs: cs,
+                                              ),
+                                            ),
+                                            _dragHandleAndSkipColumn(
+                                              context: context,
+                                              repo: repo,
+                                              c: c,
+                                              cs: cs,
+                                              includeDragHandle: false,
+                                            ),
+                                          ],
+                                        ),
                                       );
                                     },
                                   ),

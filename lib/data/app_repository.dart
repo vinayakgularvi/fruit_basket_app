@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show max;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -40,7 +41,8 @@ class AppRepository extends ChangeNotifier {
   static const _kSessionUsername = 'session_username';
   static const _kSessionRole = 'session_role';
 
-  /// Prefs key per slot — same stop order every day until admin changes it.
+  /// Local prefs key per slot (offline cache; canonical order is Firestore
+  /// `delivery_route_order/current`).
   static String _manualDeliveryOrderPrefsKey(DeliverySlot slot) {
     return 'delivery_route_order_${slot.name}';
   }
@@ -78,6 +80,8 @@ class AppRepository extends ChangeNotifier {
   final List<Lead> _leads = [];
   final List<NeededFruit> _neededFruits = [];
   final Map<String, bool> _deliveryDoneToday = {};
+  /// Calendar day shown on the delivery route screen (completions read/write).
+  DateTime _deliveryRouteCalendarDay = dateOnly(DateTime.now());
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _customerSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsRootSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsGroupSub;
@@ -90,6 +94,8 @@ class AppRepository extends ChangeNotifier {
   bool _leadsInitialSnapshotDone = false;
   DateTime? _lastExpiredLeadsPurgeAt;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _deliveryCompletionSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+      _deliveryRouteOrderSub;
   final StreamController<List<DeliveryCompletionEvent>>
       _newDeliveryCompletionsController =
       StreamController<List<DeliveryCompletionEvent>>.broadcast();
@@ -105,6 +111,7 @@ class AppRepository extends ChangeNotifier {
   final Map<String, DeliveryAgentCompensation> _deliveryAgentCompByUsername =
       {};
   /// Saved customer id order for admin “Custom” route (per slot; reused daily).
+  /// Synced across devices via Firestore `delivery_route_order/current`.
   final Map<DeliverySlot, List<String>> _manualDeliveryOrderBySlot = {};
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
@@ -123,6 +130,89 @@ class AppRepository extends ChangeNotifier {
   bool get isFruitBuyer {
     final r = _userRole?.trim().toLowerCase() ?? '';
     return r == 'fruit-buyer' || r == 'fruit_buyer';
+  }
+
+  /// Date-only for route list, skips, and completion events. Admins can change
+  /// the day; delivery agents always use today (no historical route date).
+  DateTime get deliveryRouteCalendarDay =>
+      isDeliveryAgent ? dateOnly(DateTime.now()) : _deliveryRouteCalendarDay;
+
+  bool _isViewingTodaysDeliveryCalendar() =>
+      _calendarDayString(deliveryRouteCalendarDay) ==
+      _calendarDayString(dateOnly(DateTime.now()));
+
+  void _applyCompletionDocToDoneMap(Map<String, dynamic>? data) {
+    if (data == null) return;
+    final kind = data['kind'] as String? ?? '';
+    if (kind == 'stop') {
+      final cid = data['customerId'] as String?;
+      if (cid != null) {
+        _deliveryDoneToday[cid] = true;
+      }
+    } else if (kind == 'mark_all') {
+      final slotRaw = data['slot'] as String?;
+      DeliverySlot? slot;
+      for (final s in DeliverySlot.values) {
+        if (s.name == slotRaw) {
+          slot = s;
+          break;
+        }
+      }
+      if (slot != null) {
+        for (final c in customersOnDeliveryRoute(slot)) {
+          _deliveryDoneToday[c.id] = true;
+        }
+      }
+    }
+  }
+
+  void _rebuildDeliveryDoneMapFromQuerySnapshot(
+    QuerySnapshot<Map<String, dynamic>> snap,
+  ) {
+    _deliveryDoneToday.clear();
+    final docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+      snap.docs,
+    )..sort((a, b) {
+        final ta = a.data()['createdAt'];
+        final tb = b.data()['createdAt'];
+        if (ta is Timestamp && tb is Timestamp) {
+          return ta.compareTo(tb);
+        }
+        return 0;
+      });
+    for (final d in docs) {
+      _applyCompletionDocToDoneMap(d.data());
+    }
+  }
+
+  /// Changes which calendar day the delivery screen loads completions for.
+  void setDeliveryRouteCalendarDay(DateTime day) {
+    if (isDeliveryAgent) return;
+    final d = dateOnly(day);
+    if (d == _deliveryRouteCalendarDay) return;
+    _deliveryRouteCalendarDay = d;
+    _deliveryDoneToday.clear();
+    _deliveryEventIdsAtLastMerge = {};
+    _deliveryEventsInitialSnapshotDone = false;
+    _attachDeliveryCompletionSubscription();
+    notifyListeners();
+  }
+
+  void _attachDeliveryCompletionSubscription() {
+    _deliveryCompletionSub?.cancel();
+    _deliveryCompletionSub = null;
+    if (!_firebaseReady || _firestore == null) return;
+    final dayStr = _calendarDayString(deliveryRouteCalendarDay);
+    _deliveryCompletionSub = _firestore!
+        .collection('delivery_completion_events')
+        .where('calendarDay', isEqualTo: dayStr)
+        .snapshots()
+        .listen(
+          _onDeliveryCompletionSnapshot,
+          onError: (Object e, StackTrace st) {
+            debugPrint('Firestore delivery_completion_events: $e\n$st');
+          },
+        );
   }
   List<String> get deliveryAgentUsernames =>
       List.unmodifiable(_deliveryAgentUsernames);
@@ -245,6 +335,12 @@ class AppRepository extends ChangeNotifier {
         planPriceRupees: c.planPriceRupees,
         billingPeriod: c.billingPeriod,
       );
+      if (c.secondaryPlanTier != null) {
+        sum += planPriceToApproximateMonthlyRupees(
+          planPriceRupees: c.secondaryPlanPriceRupees,
+          billingPeriod: c.billingPeriod,
+        );
+      }
     }
     return sum.toDouble();
   }
@@ -253,14 +349,16 @@ class AppRepository extends ChangeNotifier {
   double get weeklyRevenueEstimate {
     var sum = 0.0;
     for (final c in activeCustomers()) {
+      final periodTotal = c.planPriceRupees +
+          (c.secondaryPlanTier != null ? c.secondaryPlanPriceRupees : 0);
       if (c.billingPeriod == BillingPeriod.weekly) {
-        sum += c.planPriceRupees;
+        sum += periodTotal;
       } else if (c.billingPeriod == BillingPeriod.trial2Day) {
-        sum += c.planPriceRupees *
+        sum += periodTotal *
             (BillingPeriod.weekly.deliveryDays /
                 BillingPeriod.trial2Day.deliveryDays);
       } else {
-        sum += c.planPriceRupees *
+        sum += periodTotal *
             (BillingPeriod.weekly.deliveryDays /
                 BillingPeriod.monthly.deliveryDays);
       }
@@ -300,6 +398,15 @@ class AppRepository extends ChangeNotifier {
         .toList();
   }
 
+  /// Active customers in [slot] for the delivery route calendar day, excluding
+  /// [Customer.skippedDeliveryDates] for that day.
+  List<Customer> customersOnDeliveryRoute(DeliverySlot slot) {
+    final day = deliveryRouteCalendarDay;
+    return customersInDeliverySlot(slot)
+        .where((c) => !customerSkipsDeliveryOnDate(c, day))
+        .toList();
+  }
+
   /// Applies saved manual order; unknown ids are appended (by name). If nothing
   /// saved, returns [fallbackOrdered] (e.g. time-optimized list).
   List<Customer> orderedCustomersForCustomRoute(
@@ -323,6 +430,187 @@ class AppRepository extends ChangeNotifier {
     return out;
   }
 
+  DocumentReference<Map<String, dynamic>> _deliveryRouteOrderDocRef() {
+    return _firestore!
+        .collection('delivery_route_order')
+        .doc('current');
+  }
+
+  bool _sameCustomerIdOrder(List<String>? a, List<String> b) {
+    if (a == null) return b.isEmpty;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Parses `morning` / `evening` from Firestore (string CSV or list of ids).
+  String? _routeOrderCsvFromFirestore(dynamic v) {
+    if (v == null) return null;
+    if (v is String) return v;
+    if (v is Iterable) {
+      return v
+          .map((e) => e?.toString().trim() ?? '')
+          .where((s) => s.isNotEmpty)
+          .join(',');
+    }
+    return null;
+  }
+
+  /// Applies Firestore `delivery_route_order/current` fields `morning` / `evening`
+  /// (comma-separated ids). Only updates slots present in [data].
+  void _applyDeliveryRouteOrderFromFirestoreData(
+    Map<String, dynamic>? data,
+  ) {
+    if (data == null) return;
+    var changed = false;
+    for (final slot in DeliverySlot.values) {
+      final key = slot.name;
+      if (!data.containsKey(key)) continue;
+      final csv = _routeOrderCsvFromFirestore(data[key]);
+      if (csv == null) continue;
+      final next = csv.split(',').where((s) => s.isNotEmpty).toList();
+      final cur = _manualDeliveryOrderBySlot[slot];
+      if (_sameCustomerIdOrder(cur, next)) continue;
+      if (next.isEmpty) {
+        _manualDeliveryOrderBySlot.remove(slot);
+      } else {
+        _manualDeliveryOrderBySlot[slot] = next;
+      }
+      changed = true;
+    }
+    if (changed) {
+      unawaited(_persistManualDeliveryOrdersToPrefs());
+      notifyListeners();
+    }
+  }
+
+  void _onDeliveryRouteOrderSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> snap,
+  ) {
+    try {
+      if (!snap.exists) return;
+      _applyDeliveryRouteOrderFromFirestoreData(snap.data());
+    } catch (e, st) {
+      debugPrint('_onDeliveryRouteOrderSnapshot: $e\n$st');
+    }
+  }
+
+  void _subscribeDeliveryRouteOrder() {
+    _deliveryRouteOrderSub?.cancel();
+    _deliveryRouteOrderSub = null;
+    if (!_firebaseReady || _firestore == null) return;
+    _deliveryRouteOrderSub = _deliveryRouteOrderDocRef()
+        .snapshots(includeMetadataChanges: true)
+        .listen(
+          _onDeliveryRouteOrderSnapshot,
+          onError: (Object e, StackTrace st) {
+            debugPrint(
+              'Firestore delivery_route_order/current stream error '
+              '(check Security Rules): $e\n$st',
+            );
+          },
+        );
+  }
+
+  /// If Firestore has no usable route order yet, push local prefs so other
+  /// devices converge (first-writer wins for conflicting prefs).
+  Future<void> _maybeSeedLocalRouteOrderPrefsToFirestore() async {
+    if (!_firebaseReady || _firestore == null) return;
+    final ref = _deliveryRouteOrderDocRef();
+    try {
+      DocumentSnapshot<Map<String, dynamic>> snap;
+      try {
+        snap = await ref.get(const GetOptions(source: Source.server));
+      } on FirebaseException catch (e) {
+        if (e.code == 'unavailable' || e.code == 'deadline-exceeded') {
+          snap = await ref.get();
+        } else {
+          rethrow;
+        }
+      }
+      if (snap.exists) {
+        final d = snap.data();
+        if (d != null) {
+          for (final slot in DeliverySlot.values) {
+            final csv = _routeOrderCsvFromFirestore(d[slot.name]);
+            if (csv != null && csv.trim().isNotEmpty) {
+              return;
+            }
+          }
+        }
+      }
+      final payload = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (_currentUsername != null) {
+        payload['updatedBy'] = _currentUsername;
+      }
+      var n = 0;
+      for (final slot in DeliverySlot.values) {
+        final ids = _manualDeliveryOrderBySlot[slot];
+        if (ids == null || ids.isEmpty) continue;
+        payload[slot.name] = ids.join(',');
+        n++;
+      }
+      if (n == 0) return;
+      await ref.set(payload, SetOptions(merge: true));
+      debugPrint(
+        'delivery_route_order/current: seeded $n slot(s) from device prefs',
+      );
+    } on FirebaseException catch (e, st) {
+      debugPrint(
+        '_maybeSeedLocalRouteOrderPrefsToFirestore: ${e.code} ${e.message}\n$st',
+      );
+    }
+  }
+
+  Future<void> _pullDeliveryRouteOrderFromServer() async {
+    if (!_firebaseReady || _firestore == null) return;
+    try {
+      DocumentSnapshot<Map<String, dynamic>> snap;
+      try {
+        snap = await _deliveryRouteOrderDocRef().get(
+          const GetOptions(source: Source.server),
+        );
+      } on FirebaseException catch (e) {
+        if (e.code == 'unavailable' || e.code == 'deadline-exceeded') {
+          snap = await _deliveryRouteOrderDocRef().get();
+        } else {
+          rethrow;
+        }
+      }
+      if (!snap.exists) {
+        await _maybeSeedLocalRouteOrderPrefsToFirestore();
+        return;
+      }
+      _applyDeliveryRouteOrderFromFirestoreData(snap.data());
+      await _maybeSeedLocalRouteOrderPrefsToFirestore();
+    } on FirebaseException catch (e, st) {
+      debugPrint('_pullDeliveryRouteOrderFromServer: ${e.code} ${e.message}\n$st');
+    }
+  }
+
+  Future<void> _persistManualDeliveryOrdersToPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      for (final slot in DeliverySlot.values) {
+        final ids = _manualDeliveryOrderBySlot[slot];
+        if (ids == null || ids.isEmpty) {
+          await prefs.remove(_manualDeliveryOrderPrefsKey(slot));
+        } else {
+          await prefs.setString(
+            _manualDeliveryOrderPrefsKey(slot),
+            ids.join(','),
+          );
+        }
+      }
+    } catch (e, st) {
+      debugPrint('_persistManualDeliveryOrdersToPrefs: $e\n$st');
+    }
+  }
+
   Future<void> setManualDeliveryRouteOrder(
     DeliverySlot slot,
     List<String> customerIdsInOrder,
@@ -336,7 +624,23 @@ class AppRepository extends ChangeNotifier {
         customerIdsInOrder.join(','),
       );
     } catch (e, st) {
-      debugPrint('setManualDeliveryRouteOrder: $e\n$st');
+      debugPrint('setManualDeliveryRouteOrder prefs: $e\n$st');
+    }
+    if (_firebaseReady && _firestore != null) {
+      try {
+        await _deliveryRouteOrderDocRef().set(
+          <String, dynamic>{
+            slot.name: customerIdsInOrder.join(','),
+            'updatedAt': FieldValue.serverTimestamp(),
+            if (_currentUsername != null) 'updatedBy': _currentUsername,
+          },
+          SetOptions(merge: true),
+        );
+      } on FirebaseException catch (e, st) {
+        debugPrint(
+          'setManualDeliveryRouteOrder Firestore: ${e.code} ${e.message}\n$st',
+        );
+      }
     }
   }
 
@@ -359,6 +663,9 @@ class AppRepository extends ChangeNotifier {
         }
       }
       notifyListeners();
+      if (_firebaseReady && _firestore != null) {
+        await _pullDeliveryRouteOrderFromServer();
+      }
     } catch (e, st) {
       debugPrint('loadManualDeliveryRouteOrders: $e\n$st');
     }
@@ -398,7 +705,7 @@ class AppRepository extends ChangeNotifier {
   }
 
   void markAllDeliveriesDone(DeliverySlot slot, bool value) {
-    final list = customersInDeliverySlot(slot);
+    final list = customersOnDeliveryRoute(slot);
     for (final c in list) {
       _deliveryDoneToday[c.id] = value;
     }
@@ -423,7 +730,7 @@ class AppRepository extends ChangeNotifier {
     if (fs == null) return;
     final username = _currentUsername;
     if (username == null) return;
-    final day = _calendarDayString(dateOnly(DateTime.now()));
+    final day = _calendarDayString(deliveryRouteCalendarDay);
     final role = _userRole?.trim().toLowerCase() ?? 'admin';
     try {
       await fs.collection('delivery_completion_events').add({
@@ -446,7 +753,7 @@ class AppRepository extends ChangeNotifier {
     if (fs == null) return;
     final username = _currentUsername;
     if (username == null) return;
-    final day = _calendarDayString(dateOnly(DateTime.now()));
+    final day = _calendarDayString(deliveryRouteCalendarDay);
     final role = _userRole?.trim().toLowerCase() ?? 'admin';
     try {
       await fs.collection('delivery_completion_events').add({
@@ -465,7 +772,7 @@ class AppRepository extends ChangeNotifier {
   }
 
   int completedCountForSlot(DeliverySlot slot) {
-    return customersInDeliverySlot(slot)
+    return customersOnDeliveryRoute(slot)
         .where((c) => isDeliveryChecked(c.id))
         .length;
   }
@@ -550,20 +857,7 @@ class AppRepository extends ChangeNotifier {
       await _ensureDefaultUser();
       await _refreshDeliveryAgentUsers();
       await _syncUserRoleFromFirestore();
-      _deliveryCompletionSub?.cancel();
-      _deliveryCompletionSub = _firestore!
-          .collection('delivery_completion_events')
-          .where(
-            'calendarDay',
-            isEqualTo: _calendarDayString(dateOnly(DateTime.now())),
-          )
-          .snapshots()
-          .listen(
-            _onDeliveryCompletionSnapshot,
-            onError: (Object e, StackTrace st) {
-              debugPrint('Firestore delivery_completion_events: $e\n$st');
-            },
-          );
+      _attachDeliveryCompletionSubscription();
       _neededFruitsSub?.cancel();
       _neededFruitsReady = false;
       _neededFruitsSub = _firestore!
@@ -582,6 +876,7 @@ class AppRepository extends ChangeNotifier {
             },
           );
       await loadManualDeliveryRouteOrders();
+      _subscribeDeliveryRouteOrder();
       debugPrint(
         'Firebase OK — project=${Firebase.app().options.projectId}, '
         'Firestore customers + leads + needed_fruits, database=$kFirestoreDatabaseId',
@@ -626,6 +921,13 @@ class AppRepository extends ChangeNotifier {
       if (normalized != _userRole) {
         _userRole = normalized;
         await _saveSession(username: username, role: normalized);
+        if (_firebaseReady && _firestore != null) {
+          _deliveryDoneToday.clear();
+          _deliveryEventIdsAtLastMerge = {};
+          _deliveryEventsInitialSnapshotDone = false;
+          _attachDeliveryCompletionSubscription();
+          await _resyncDeliveryCompletionBaseline();
+        }
         notifyListeners();
       }
     } on FirebaseException catch (e, st) {
@@ -913,7 +1215,7 @@ class AppRepository extends ChangeNotifier {
           .collection('delivery_completion_events')
           .where(
             'calendarDay',
-            isEqualTo: _calendarDayString(dateOnly(DateTime.now())),
+            isEqualTo: _calendarDayString(deliveryRouteCalendarDay),
           )
           .get();
       _deliveryEventIdsAtLastMerge = snap.docs.map((d) => d.id).toSet();
@@ -927,6 +1229,7 @@ class AppRepository extends ChangeNotifier {
     _isLoggedIn = false;
     _userRole = null;
     _currentUsername = null;
+    _deliveryRouteCalendarDay = dateOnly(DateTime.now());
     _neededFruits.clear();
     _leadIdsAtLastMerge = {};
     _leadsInitialSnapshotDone = false;
@@ -1090,6 +1393,7 @@ class AppRepository extends ChangeNotifier {
     QuerySnapshot<Map<String, dynamic>> snap,
   ) {
     final wasInitialDone = _deliveryEventsInitialSnapshotDone;
+    final beforeEventIds = Set<String>.from(_deliveryEventIdsAtLastMerge);
     final byId = <String, DeliveryCompletionEvent>{};
     for (final d in snap.docs) {
       final e = DeliveryCompletionEvent.fromFirestore(d);
@@ -1097,8 +1401,20 @@ class AppRepository extends ChangeNotifier {
     }
     final afterIds = byId.keys.toSet();
 
+    if (beforeEventIds.isEmpty || !_isViewingTodaysDeliveryCalendar()) {
+      _rebuildDeliveryDoneMapFromQuerySnapshot(snap);
+    } else {
+      final byDoc = {for (final d in snap.docs) d.id: d};
+      for (final id in afterIds.difference(beforeEventIds)) {
+        final d = byDoc[id];
+        if (d != null) {
+          _applyCompletionDocToDoneMap(d.data());
+        }
+      }
+    }
+
     if (wasInitialDone && isAdmin) {
-      final added = afterIds.difference(_deliveryEventIdsAtLastMerge);
+      final added = afterIds.difference(beforeEventIds);
       if (added.isNotEmpty && !_newDeliveryCompletionsController.isClosed) {
         final fresh = added.map((id) => byId[id]!).where(
               (e) => e.markedByRole == 'delivery_agent',
@@ -1111,6 +1427,7 @@ class AppRepository extends ChangeNotifier {
     }
     _deliveryEventIdsAtLastMerge = afterIds;
     _deliveryEventsInitialSnapshotDone = true;
+    notifyListeners();
   }
 
   void _onLeadsRootSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
@@ -1361,6 +1678,7 @@ class AppRepository extends ChangeNotifier {
     _leadsRootSub?.cancel();
     _leadsGroupSub?.cancel();
     _deliveryCompletionSub?.cancel();
+    _deliveryRouteOrderSub?.cancel();
     if (!_newLeadsController.isClosed) {
       _newLeadsController.close();
     }
@@ -1516,6 +1834,37 @@ class AppRepository extends ChangeNotifier {
     );
   }
 
+  /// Removes [skippedDate] from [Customer.skippedDeliveryDates] and shortens
+  /// [Customer.endDate] when it had been extended for that skip.
+  Future<void> undoSkipDeliveryDate(
+    String customerId,
+    DateTime skippedDate,
+  ) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    final target = dateOnly(skippedDate);
+    final had = c.skippedDeliveryDates.any((d) => dateOnly(d) == target);
+    if (!had) return;
+    final nextDates = c.skippedDeliveryDates
+        .where((d) => dateOnly(d) != target)
+        .map(dateOnly)
+        .toList()
+      ..sort();
+    final nextSkipped = max(nextDates.length, c.skippedDeliveryDays - 1);
+    final newEnd = endDateAfterDeliveryDays(
+      dateOnly(c.startDate),
+      c.billingPeriod.deliveryDays + nextSkipped,
+    );
+    await updateCustomer(
+      c.copyWith(
+        skippedDeliveryDays: nextSkipped,
+        skippedDeliveryDates: nextDates,
+        endDate: dateOnly(newEnd),
+      ),
+    );
+  }
+
   /// Convenience action used by old UI paths.
   Future<void> skipOneDeliveryDay(String customerId) {
     return skipDeliveryDate(customerId, DateTime.now());
@@ -1618,7 +1967,7 @@ class AppRepository extends ChangeNotifier {
     final pStart = periodStartForDate(c, anchor);
     if (pStart == null) return;
 
-    final plan = c.planPriceRupees;
+    final plan = c.totalPlanPriceRupees;
     final v = newDueRupees.clamp(0, plan);
     final due = paymentDueForCustomer(c, anchor);
 
@@ -1672,7 +2021,7 @@ class AppRepository extends ChangeNotifier {
     if (i < 0) return;
     final c = _customers[i];
     if (!c.active) return;
-    final plan = c.planPriceRupees;
+    final plan = c.totalPlanPriceRupees;
     final paid = newPaidRupees.clamp(0, plan);
     final newDue = plan - paid;
     await adjustDueAmountForCurrentPeriod(customerId, newDue);

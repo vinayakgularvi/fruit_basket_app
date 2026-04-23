@@ -44,6 +44,56 @@ class _CustomersScreenState extends State<CustomersScreen> {
     super.dispose();
   }
 
+  Future<void> _undoSkipForCustomer(
+    BuildContext context,
+    AppRepository repo,
+    Customer c,
+    DateFormat df,
+  ) async {
+    final unique = c.skippedDeliveryDates.map(dateOnly).toSet().toList()
+      ..sort();
+    if (unique.isEmpty) return;
+    final chosen = await showDialog<DateTime>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Undo skip'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final d in unique)
+                ListTile(
+                  title: Text(df.format(d)),
+                  onTap: () => Navigator.of(ctx).pop(d),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (chosen == null) return;
+    try {
+      await repo.undoSkipDeliveryDate(c.id, chosen);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not undo skip: $e')),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Removed skip for ${df.format(chosen)}.')),
+    );
+  }
+
   Future<void> _bulkAssignDeliveryAgent(
     BuildContext context,
     AppRepository repo,
@@ -596,7 +646,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                         const SizedBox(width: 6),
                                         Expanded(
                                           child: Text(
-                                            '${c.planTier.title} · ₹${c.planPriceRupees}/$periodShort\n'
+                                            '${c.planTier.title} · ₹${c.planPriceRupees}/$periodShort'
+                                            '${c.secondaryPlanTier != null ? '\n+ ${c.secondaryPlanTier!.title} · ₹${c.secondaryPlanPriceRupees}/$periodShort' : ''}\n'
+                                            'Total ₹${c.totalPlanPriceRupees}/$periodShort · '
                                             '${df.format(c.startDate)} → ${df.format(c.endDate)}',
                                             style: Theme.of(context)
                                                 .textTheme
@@ -606,7 +658,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                                   height: 1.35,
                                                   fontWeight: FontWeight.w500,
                                                 ),
-                                            maxLines: 2,
+                                            maxLines: 4,
                                             overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
@@ -961,8 +1013,27 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                           '${c.name} deleted.',
                                         ),
                                       ),
-                                    );
-                                  },
+                                  );
+                                },
+                              ),
+                              if (c.skippedDeliveryDates.isNotEmpty)
+                                IconButton(
+                                  style: IconButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: cs.tertiary,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.event_available_outlined,
+                                  ),
+                                  tooltip: 'Undo skip',
+                                  onPressed: () => unawaited(
+                                    _undoSkipForCustomer(
+                                      context,
+                                      repo,
+                                      c,
+                                      df,
+                                    ),
+                                  ),
                                 ),
                               IconButton(
                                 style: IconButton.styleFrom(

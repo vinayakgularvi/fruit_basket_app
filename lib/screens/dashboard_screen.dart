@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
 import '../models/customer_list_filter.dart';
+import '../models/delivery_slot.dart';
+import '../utils/production_prep_totals.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key, this.onOpenCustomersFilter});
@@ -275,11 +279,8 @@ class DashboardScreen extends StatelessWidget {
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Healthy subs · morning & evening',
-            style: Theme.of(context).textTheme.bodyLarge,
-          ),
+          const SizedBox(height: 16),
+          if (!deliveryOnly) const _ProductionPrepPackSection(),
           if (repo.isAdmin) ...[
             const SizedBox(height: 12),
             Wrap(
@@ -445,79 +446,6 @@ class DashboardScreen extends StatelessWidget {
               );
             },
           ),
-          if (fruitBuyerHome) ...[
-            const SizedBox(height: 28),
-            Text(
-              'Quick tips',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  'Use the Buy fruits tab to maintain the shopping list. '
-                  'Pull down on that screen to refresh from the server.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-            ),
-          ],
-          if (!deliveryOnly && !fruitBuyerHome) ...[
-            const SizedBox(height: 28),
-            Text(
-              'Quick tips',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.wb_sunny_outlined,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Morning window',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Pack fruit boxes first; chilled items last.',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.nights_stay_outlined,
-                          color: Theme.of(context).colorScheme.tertiary,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Evening window',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Confirm meal counts before leaving the kitchen.',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
           const SizedBox(height: 20),
           OutlinedButton.icon(
             onPressed: () => context.read<AppRepository>().logout(),
@@ -525,6 +453,125 @@ class DashboardScreen extends StatelessWidget {
             label: const Text('Logout'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Kitchen prep counts by time: before 11 = today morning; 11–8pm = today evening;
+/// after 8pm = next delivery-day morning (Sunday skipped).
+class _ProductionPrepPackSection extends StatefulWidget {
+  const _ProductionPrepPackSection();
+
+  @override
+  State<_ProductionPrepPackSection> createState() =>
+      _ProductionPrepPackSectionState();
+}
+
+class _ProductionPrepPackSectionState extends State<_ProductionPrepPackSection> {
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final repo = context.watch<AppRepository>();
+    final cs = Theme.of(context).colorScheme;
+    final dayFmt = DateFormat.yMMMEd();
+    final schedule = resolveProductionPrepScheduleView(DateTime.now());
+    final counts = productionPackCountsForDaySlot(
+      repo.customers,
+      schedule.calendarDay,
+      schedule.slot,
+    );
+    final stops = repo.customers
+        .where(
+          (c) => isCustomerCountedForProductionPrep(
+            c,
+            schedule.calendarDay,
+            schedule.slot,
+          ),
+        )
+        .length;
+    final units = totalPackUnits(counts);
+    const order = ProductionPackBucket.values;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.inventory_2_outlined, color: cs.primary, size: 26),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        schedule.title,
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${dayFmt.format(schedule.calendarDay)} · '
+                        '${schedule.slot.label} · '
+                        '$stops stops · $units lines',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: cs.onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...order.map((b) {
+              final n = counts[b] ?? 0;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        b.shortLabel,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    Text(
+                      '$n',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            fontFeatures: const [
+                              FontFeature.tabularFigures(),
+                            ],
+                          ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
       ),
     );
   }
