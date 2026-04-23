@@ -117,11 +117,148 @@ class DashboardScreen extends StatelessWidget {
     passCtrl.dispose();
   }
 
+  Future<void> _showEditDeliveryAgentPayDialog(BuildContext context) async {
+    final repo = context.read<AppRepository>();
+    final agents = repo.deliveryAgentUsernames;
+    if (agents.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No delivery agents found')),
+      );
+      return;
+    }
+    var selected = agents.first;
+    final weeklyCtrl = TextEditingController(
+      text: '${repo.deliveryAgentWeeklyAllowanceRupees(selected)}',
+    );
+    final perOrderCtrl = TextEditingController(
+      text: '${repo.deliveryAgentPerOrderRupees(selected)}',
+    );
+
+    int parseAmount(String raw) => int.tryParse(raw.trim()) ?? 0;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setLocal) {
+            final weekly = parseAmount(weeklyCtrl.text);
+            final perOrder = parseAmount(perOrderCtrl.text);
+            final monthly = repo.estimatedMonthlyCompensationRupees(
+              selected,
+              weeklyAllowanceRupees: weekly,
+              perOrderRupees: perOrder,
+            );
+            final monthlyOrders = repo.estimatedMonthlyOrdersForAgent(selected);
+            return AlertDialog(
+              title: const Text('Delivery agent pay'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: selected,
+                    decoration: const InputDecoration(labelText: 'Agent'),
+                    items: agents
+                        .map(
+                          (u) => DropdownMenuItem<String>(
+                            value: u,
+                            child: Text(u),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setLocal(() {
+                        selected = v;
+                        weeklyCtrl.text =
+                            '${repo.deliveryAgentWeeklyAllowanceRupees(v)}';
+                        perOrderCtrl.text = '${repo.deliveryAgentPerOrderRupees(v)}';
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: weeklyCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Weekly allowance (₹)',
+                      prefixText: '₹ ',
+                    ),
+                    onChanged: (_) => setLocal(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: perOrderCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Per order price (₹)',
+                      prefixText: '₹ ',
+                    ),
+                    onChanged: (_) => setLocal(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Auto monthly total: ₹$monthly',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Formula: (weekly allowance × 4) + '
+                    '(per order × $monthlyOrders estimated monthly orders)',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved == true && context.mounted) {
+      await repo.updateDeliveryAgentCompensation(
+        username: selected,
+        weeklyAllowanceRupees: parseAmount(weeklyCtrl.text),
+        perOrderRupees: parseAmount(perOrderCtrl.text),
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Updated pay for "$selected"')),
+        );
+      }
+    }
+    weeklyCtrl.dispose();
+    perOrderCtrl.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final currency = NumberFormat.currency(symbol: '₹', decimalDigits: 0);
     final deliveryOnly = repo.isDeliveryAgent;
+    final currentAgent = repo.currentUsername ?? '';
+    final weeklyAllowance = deliveryOnly
+        ? repo.deliveryAgentWeeklyAllowanceRupees(currentAgent)
+        : 0;
+    final monthlyOrders = deliveryOnly
+        ? repo.estimatedMonthlyOrdersForAgent(currentAgent)
+        : 0;
+    final monthlyEarnTotal = deliveryOnly
+        ? repo.estimatedMonthlyCompensationRupees(currentAgent)
+        : 0;
     final fruitBuyerHome =
         repo.isFruitBuyer && !repo.isAdmin && !repo.isDeliveryAgent;
 
@@ -159,6 +296,11 @@ class DashboardScreen extends StatelessWidget {
                   onPressed: () => _showAddFruitBuyerDialog(context),
                   icon: const Icon(Icons.shopping_basket_outlined),
                   label: const Text('Add fruit buyer'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _showEditDeliveryAgentPayDialog(context),
+                  icon: const Icon(Icons.payments_outlined),
+                  label: const Text('Delivery agent pay'),
                 ),
               ],
             ),
@@ -199,6 +341,21 @@ class DashboardScreen extends StatelessWidget {
                         value: currency.format(repo.todayDeliveryPayoutRupees),
                         subtitle:
                             '₹${repo.perOrderPayoutRupees} per order × ${repo.todayDeliveryCount}',
+                      ),
+                      if (weeklyAllowance > 0)
+                        _StatCard(
+                          icon: Icons.payments_outlined,
+                          label: 'Weekly allowance',
+                          value: currency.format(weeklyAllowance),
+                          subtitle: 'Fixed weekly amount',
+                        ),
+                      _StatCard(
+                        icon: Icons.trending_up,
+                        label: 'Total you can earn',
+                        value: currency.format(monthlyEarnTotal),
+                        subtitle:
+                            '(₹${repo.perOrderPayoutRupees} × $monthlyOrders orders) + '
+                            '₹${weeklyAllowance * 4}/month allowance',
                       ),
                     ]
                   : fruitBuyerHome

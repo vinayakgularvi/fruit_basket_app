@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -10,6 +12,7 @@ import '../models/delivery_slot.dart';
 import '../models/subscription_plan.dart';
 import '../utils/delivery_plan_dates.dart';
 import '../utils/phone_launch.dart';
+import '../utils/whatsapp_launch.dart';
 import 'add_customer_screen.dart';
 import '../widgets/manual_receipt_dialog.dart';
 
@@ -438,7 +441,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
                     itemCount: items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, i) {
                       final c = items[i];
                       final cs = Theme.of(context).colorScheme;
@@ -455,8 +458,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 })
                             : null,
                         child: Card(
+                          elevation: 0,
+                          color: cs.surfaceContainerLow,
+                          margin: EdgeInsets.zero,
+                          clipBehavior: Clip.antiAlias,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: BorderSide(
+                              color: cs.outlineVariant.withValues(alpha: 0.55),
+                            ),
+                          ),
                           child: Padding(
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.fromLTRB(14, 14, 12, 12),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
@@ -464,23 +477,38 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     if (_selectionMode) ...[
-                                      Checkbox(
-                                        value: _selectedIds.contains(c.id),
-                                        onChanged: (_) => setState(() {
-                                          if (_selectedIds.contains(c.id)) {
-                                            _selectedIds.remove(c.id);
-                                          } else {
-                                            _selectedIds.add(c.id);
-                                          }
-                                        }),
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Checkbox(
+                                          value: _selectedIds.contains(c.id),
+                                          materialTapTargetSize:
+                                              MaterialTapTargetSize.shrinkWrap,
+                                          visualDensity: VisualDensity.compact,
+                                          onChanged: (_) => setState(() {
+                                            if (_selectedIds.contains(c.id)) {
+                                              _selectedIds.remove(c.id);
+                                            } else {
+                                              _selectedIds.add(c.id);
+                                            }
+                                          }),
+                                        ),
                                       ),
-                                      const SizedBox(width: 4),
+                                      const SizedBox(width: 6),
                                     ],
                                     CircleAvatar(
+                                      radius: 22,
+                                      backgroundColor: cs.primaryContainer,
+                                      foregroundColor: cs.onPrimaryContainer,
                                       child: Text(
                                         c.name.isNotEmpty
                                             ? c.name[0].toUpperCase()
                                             : '?',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w700,
+                                            ),
                                       ),
                                     ),
                                   const SizedBox(width: 12),
@@ -498,48 +526,105 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                                 c.name,
                                                 style: Theme.of(context)
                                                     .textTheme
-                                                    .titleMedium,
+                                                    .titleSmall
+                                                    ?.copyWith(
+                                                      fontWeight: FontWeight.w700,
+                                                      height: 1.25,
+                                                    ),
                                                 maxLines: 2,
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
                                             const SizedBox(width: 8),
                                             Chip(
-                                              label:
-                                                  Text(c.preferredSlot.label),
+                                              avatar: Icon(
+                                                c.preferredSlot ==
+                                                        DeliverySlot.morning
+                                                    ? Icons.wb_sunny_outlined
+                                                    : Icons.nights_stay_outlined,
+                                                size: 16,
+                                                color: cs.secondary,
+                                              ),
+                                              label: Text(
+                                                c.preferredSlot.label,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .labelSmall
+                                                    ?.copyWith(
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                              ),
                                               visualDensity:
                                                   VisualDensity.compact,
                                               materialTapTargetSize:
                                                   MaterialTapTargetSize
                                                       .shrinkWrap,
-                                              padding: EdgeInsets.zero,
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                              ),
+                                              side: BorderSide(
+                                                color: cs.outline
+                                                    .withValues(alpha: 0.45),
+                                              ),
+                                              backgroundColor: cs.surface,
                                             ),
                                           ],
                                         ),
-                                    const SizedBox(height: 4),
+                                    const SizedBox(height: 6),
                                     Text(
                                       c.phone,
-                                      style:
-                                          Theme.of(context).textTheme.bodyMedium,
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '${c.planTier.title} · ₹${c.planPriceRupees}/$periodShort · ${df.format(c.startDate)} → ${df.format(c.endDate)}',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
                                           ?.copyWith(
-                                            color: cs.primary,
-                                            fontWeight: FontWeight.w500,
+                                            color: cs.onSurfaceVariant,
                                           ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Padding(
+                                          padding: const EdgeInsets.only(top: 2),
+                                          child: Icon(
+                                            Icons.subscriptions_outlined,
+                                            size: 16,
+                                            color: cs.tertiary,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            '${c.planTier.title} · ₹${c.planPriceRupees}/$periodShort\n'
+                                            '${df.format(c.startDate)} → ${df.format(c.endDate)}',
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color: cs.onSurfaceVariant,
+                                                  height: 1.35,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                     if (subscriptionLastDayToday(c)) ...[
                                       const SizedBox(height: 10),
                                       Material(
+                                        elevation: 0,
                                         color: cs.tertiaryContainer
-                                            .withValues(alpha: 0.65),
-                                        borderRadius:
-                                            BorderRadius.circular(12),
+                                            .withValues(alpha: 0.55),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          side: BorderSide(
+                                            color: cs.tertiary
+                                                .withValues(alpha: 0.35),
+                                          ),
+                                        ),
                                         child: Padding(
                                           padding: const EdgeInsets.all(12),
                                           child: Column(
@@ -592,6 +677,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                                     ),
                                                     label: const Text('Call'),
                                                   ),
+                                                  if (_filter ==
+                                                      CustomerListFilter
+                                                          .lastDayOfPlan)
+                                                    FilledButton.tonal(
+                                                      onPressed: c.phone
+                                                              .trim()
+                                                              .isEmpty
+                                                          ? null
+                                                          : () => unawaited(
+                                                                openSubscriptionExpiryWhatsApp(
+                                                                  context,
+                                                                  c.phone,
+                                                                ),
+                                                              ),
+                                                      child: const Text(
+                                                        'Send msg',
+                                                      ),
+                                                    ),
                                                   FilledButton.icon(
                                                     onPressed: () =>
                                                         _confirmRecontinueSubscription(
@@ -656,13 +759,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                         ),
                                       ],
                                     ],
-                                    const SizedBox(height: 2),
+                                    const SizedBox(height: 4),
                                     Text(
                                       c.address,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
-                                          ?.copyWith(color: cs.onSurfaceVariant),
+                                          ?.copyWith(
+                                            color: cs.onSurfaceVariant,
+                                            height: 1.3,
+                                          ),
                                     ),
                                     if (c.requestedDeliveryTime.isNotEmpty) ...[
                                       const SizedBox(height: 4),
@@ -766,16 +874,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
+                          Divider(
+                            height: 22,
+                            thickness: 1,
+                            color: cs.outlineVariant.withValues(alpha: 0.65),
+                          ),
                           Align(
                             alignment: Alignment.centerRight,
                             child: Wrap(
                               crossAxisAlignment: WrapCrossAlignment.center,
                               alignment: WrapAlignment.end,
-                              spacing: 0,
+                              spacing: 2,
                               runSpacing: 4,
                               children: [
                                 IconButton(
+                                  style: IconButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: cs.onSurfaceVariant,
+                                  ),
                                   icon: const Icon(Icons.receipt_long_outlined),
                                   tooltip: 'Generate receipt',
                                   onPressed: () async {
@@ -788,6 +904,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 ),
                               if (repo.isAdmin && c.customerCreated && !c.adminApproved)
                                 IconButton(
+                                  style: IconButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: cs.primary,
+                                  ),
                                   icon: const Icon(Icons.verified_outlined),
                                   tooltip: 'Approve customer',
                                   onPressed: () async {
@@ -804,6 +924,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 ),
                               if (repo.isAdmin && c.customerCreated && !c.adminApproved)
                                 IconButton(
+                                  style: IconButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: cs.error,
+                                  ),
                                   icon: const Icon(Icons.delete_outline),
                                   tooltip: 'Delete created customer',
                                   onPressed: () async {
@@ -841,6 +965,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                   },
                                 ),
                               IconButton(
+                                style: IconButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  foregroundColor: cs.onSurfaceVariant,
+                                ),
                                 icon: const Icon(Icons.event_busy_outlined),
                                 tooltip: 'Select skipped date',
                                 onPressed: () async {
@@ -865,6 +993,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 },
                               ),
                               IconButton(
+                                style: IconButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  foregroundColor: cs.primary,
+                                ),
                                 icon: const Icon(Icons.edit_outlined),
                                 tooltip: 'Edit customer',
                                 onPressed: () async {

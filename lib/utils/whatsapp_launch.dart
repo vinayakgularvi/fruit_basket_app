@@ -1,12 +1,121 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_navigator.dart';
 import '../models/customer.dart';
 import 'phone_launch.dart';
 import 'payment_receipt_pdf.dart';
 import 'schedule_after_frame.dart';
+
+/// Pre-filled text for customers whose subscription ends today (delivery reminder).
+String subscriptionLastDayRenewalWhatsAppMessage() {
+  return 'Dear Customer,\n\n'
+      "We hope you're enjoying your experience with Fruit Basket.\n\n"
+      'This is a quick reminder that your subscription expires today. '
+      'Kindly let us know if you would like to:\n'
+      '* Continue your current plan\n'
+      '* Upgrade to a premium plan\n'
+      '* Cancel your subscription\n\n'
+      'Please reply at your convenience so we can assist you without any '
+      'interruption in service.\n\n'
+      'Thank you for choosing Fruit Basket.\n\n'
+      'Warm regards,\n'
+      'Team Fruit Basket';
+}
+
+/// Opens WhatsApp chat to [phone] with [subscriptionLastDayRenewalWhatsAppMessage].
+Future<void> openSubscriptionExpiryWhatsApp(
+  BuildContext context,
+  String phone,
+) async {
+  var digits = sanitizedPhoneForDial(phone).replaceAll('+', '');
+  if (digits.isEmpty) {
+    final root = rootNavigatorContext;
+    final snackCtx = root != null && root.mounted ? root : context;
+    if (!snackCtx.mounted) return;
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(content: Text('No valid WhatsApp number for this customer')),
+    );
+    return;
+  }
+  if (digits.length == 10) {
+    digits = '91$digits';
+  }
+
+  final text = subscriptionLastDayRenewalWhatsAppMessage();
+  final uri = Uri(
+    scheme: 'https',
+    host: 'wa.me',
+    path: '/$digits',
+    queryParameters: <String, String>{'text': text},
+  );
+
+  final ok = await launchUrl(
+    uri,
+    mode: LaunchMode.externalApplication,
+  );
+  final root = rootNavigatorContext;
+  final snackCtx = root != null && root.mounted ? root : context;
+  if (!snackCtx.mounted) return;
+  if (!ok) {
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(content: Text('Could not open WhatsApp')),
+    );
+  }
+}
+
+/// Reminder for outstanding period payment (amount is always the current remaining).
+String buildPaymentPendingWhatsAppMessage(int remainingRupees) {
+  final amt = NumberFormat.decimalPattern('en_IN').format(remainingRupees);
+  return 'Dear Customer,\n\n'
+      'A payment of ₹$amt is pending. Kindly complete it at your earliest convenience.\n\n'
+      'Thank you,\n'
+      'Team Fruit Basket';
+}
+
+/// Opens WhatsApp with [buildPaymentPendingWhatsAppMessage] for [remainingRupees].
+Future<void> openPaymentPendingWhatsApp(
+  BuildContext context, {
+  required String phone,
+  required int remainingRupees,
+}) async {
+  var digits = sanitizedPhoneForDial(phone).replaceAll('+', '');
+  if (digits.isEmpty) {
+    final root = rootNavigatorContext;
+    final snackCtx = root != null && root.mounted ? root : context;
+    if (!snackCtx.mounted) return;
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(content: Text('No valid WhatsApp number for this customer')),
+    );
+    return;
+  }
+  if (digits.length == 10) {
+    digits = '91$digits';
+  }
+
+  final text = buildPaymentPendingWhatsAppMessage(remainingRupees);
+  final uri = Uri(
+    scheme: 'https',
+    host: 'wa.me',
+    path: '/$digits',
+    queryParameters: <String, String>{'text': text},
+  );
+
+  final ok = await launchUrl(
+    uri,
+    mode: LaunchMode.externalApplication,
+  );
+  final root = rootNavigatorContext;
+  final snackCtx = root != null && root.mounted ? root : context;
+  if (!snackCtx.mounted) return;
+  if (!ok) {
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(content: Text('Could not open WhatsApp')),
+    );
+  }
+}
 
 String buildReceiptWhatsAppMessage({
   required Customer customer,

@@ -34,6 +34,22 @@ DateTime? periodStartForDate(Customer c, DateTime today) {
   }
 }
 
+/// Calendar day to use for payment due / admin adjustments when [today] is not
+/// inside the subscription window: first day of subscription if before start,
+/// last day if after end; otherwise [today].
+///
+/// Lets admins correct paid/due for the first or last billing segment when the
+/// clock is outside `[startDate, endDate]`.
+DateTime paymentScheduleAnchorDate(Customer c, DateTime today) {
+  final t = dateOnly(today);
+  if (periodStartForDate(c, t) != null) return t;
+  final subStart = dateOnly(c.startDate);
+  final subEnd = dateOnly(c.endDate);
+  if (t.isBefore(subStart)) return subStart;
+  if (t.isAfter(subEnd)) return subEnd;
+  return subStart;
+}
+
 bool sameCalendarDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
 

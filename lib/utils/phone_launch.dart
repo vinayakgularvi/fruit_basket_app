@@ -16,6 +16,28 @@ String sanitizedPhoneForDial(String phone) {
   return b.toString();
 }
 
+/// Digits only (no `+`), for comparisons.
+String phoneDigitsOnly(String raw) =>
+    raw.replaceAll(RegExp(r'\D'), '');
+
+/// Last 10 digits when at least 10 are present (typical mobile); otherwise full digit run.
+String phoneMatchKey(String raw) {
+  final d = phoneDigitsOnly(raw);
+  if (d.length >= 10) return d.substring(d.length - 10);
+  return d;
+}
+
+/// Whether [Lead.mobile] is the same number as [customerPhone] (dedupe after signup).
+bool leadMobileMatchesCustomerPhone(String mobile, String customerPhone) {
+  final m = mobile.trim();
+  if (m.isEmpty) return false;
+  final ck = phoneMatchKey(customerPhone);
+  if (ck.isEmpty) return false;
+  final mk = phoneMatchKey(m);
+  if (mk.length >= 10 && ck.length >= 10) return mk == ck;
+  return phoneDigitsOnly(m) == phoneDigitsOnly(customerPhone);
+}
+
 Future<void> openCustomerPhoneDialer(BuildContext context, String phone) async {
   final clean = sanitizedPhoneForDial(phone);
   if (clean.isEmpty) {

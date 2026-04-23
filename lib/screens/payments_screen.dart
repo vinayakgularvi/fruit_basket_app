@@ -47,9 +47,10 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   /// Amount already collected toward the current billing period (estimate from due vs plan).
   int _paidInCurrentPeriod(Customer c, DateTime today) {
     if (!c.active) return 0;
-    final pStart = periodStartForDate(c, today);
+    final anchor = paymentScheduleAnchorDate(c, today);
+    final pStart = periodStartForDate(c, anchor);
     if (pStart == null) return 0;
-    final due = paymentDueForCustomer(c, today);
+    final due = paymentDueForCustomer(c, anchor);
     if (due == null) return c.planPriceRupees;
     return (c.planPriceRupees - due.amountRupees).clamp(0, c.planPriceRupees);
   }
@@ -57,7 +58,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   /// Outstanding for today’s rules (0 if none due).
   int _remainingForCustomer(Customer c, DateTime today) {
     if (!c.active) return 0;
-    final due = paymentDueForCustomer(c, today);
+    final anchor = paymentScheduleAnchorDate(c, today);
+    final due = paymentDueForCustomer(c, anchor);
     return due?.amountRupees ?? 0;
   }
 
@@ -71,8 +73,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     return null;
   }
 
-  bool _canEditPeriodAmounts(Customer c, DateTime today) =>
-      c.active && periodStartForDate(c, today) != null;
+  bool _canEditPeriodAmounts(Customer c, DateTime today) {
+    if (!c.active) return false;
+    final anchor = paymentScheduleAnchorDate(c, today);
+    return periodStartForDate(c, anchor) != null;
+  }
 
   Future<void> _editDue(
     BuildContext context,
@@ -196,11 +201,23 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     final filtered = activeOnly
         .where((c) => _matchesSearch(c.name, c.phone, q))
-        .toList();
+        .toList()
+      ..sort((a, b) {
+        final ra = _remainingForCustomer(a, today);
+        final rb = _remainingForCustomer(b, today);
+        final za = ra == 0;
+        final zb = rb == 0;
+        if (za != zb) {
+          return za ? 1 : -1;
+        }
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
 
+    var totalPlanAmount = 0;
     var totalPaid = 0;
     var totalRemaining = 0;
     for (final c in repo.activeCustomers()) {
+      totalPlanAmount += c.planPriceRupees;
       totalPaid += _paidInCurrentPeriod(c, today);
       totalRemaining += _remainingForCustomer(c, today);
     }
@@ -238,29 +255,48 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                   child: Card(
+                    elevation: 0,
+                    color: Theme.of(context).colorScheme.surfaceContainerLow,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.outlineVariant.withValues(alpha: 0.55),
+                      ),
+                    ),
                     child: Padding(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             'Active customers · current period',
-                            style: Theme.of(context).textTheme.labelLarge,
+                            style: Theme.of(context).textTheme.labelMedium,
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 8),
                           Row(
                             children: [
                               Expanded(
                                 child: _SummaryTile(
+                                  icon: Icons.account_balance_wallet_outlined,
+                                  label: 'Total payment',
+                                  value: currency.format(totalPlanAmount),
+                                  color: Theme.of(context).colorScheme.tertiary,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _SummaryTile(
                                   icon: Icons.payments_outlined,
-                                  label: 'Total paid',
+                                  label: 'Collected',
                                   value: currency.format(totalPaid),
                                   color: Theme.of(context).colorScheme.primary,
                                 ),
                               ),
-                              const SizedBox(width: 12),
+                              const SizedBox(width: 8),
                               Expanded(
                                 child: _SummaryTile(
                                   icon: Icons.pending_outlined,
@@ -294,20 +330,159 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                           ),
                         )
                       : ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
                           itemCount: filtered.length,
                           separatorBuilder: (_, __) =>
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 6),
                           itemBuilder: (context, i) {
                             final c = filtered[i];
                             final pmt = _pendingPaymentFor(pending, c.id);
                             final paid = _paidInCurrentPeriod(c, today);
                             final remaining = _remainingForCustomer(c, today);
                             final cs = Theme.of(context).colorScheme;
+                            final inBillingWindow =
+                                periodStartForDate(c, today) != null;
+                            final canEditPeriod =
+                                _canEditPeriodAmounts(c, today);
+                            final canCollect =
+                                pmt != null && pmt.kind != null;
+
+                            Future<void> onCollectPressed() async {
+                              if (!inBillingWindow) {
+                                await showDialog<void>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('Outside billing period'),
+                                    content: const Text(
+                                      'This customer is currently outside the '
+                                      'active billing period, so payment '
+                                      'collection is not available. You can '
+                                      'still use Edit paid / Edit remaining to '
+                                      'correct amounts for the nearest '
+                                      'subscription segment.',
+                                    ),
+                                    actions: [
+                                      FilledButton(
+                                        onPressed: () => Navigator.pop(ctx),
+                                        child: const Text('OK'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                return;
+                              }
+                              if (!canCollect) {
+                                final choice = await showDialog<String>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('No payment due'),
+                                    content: const Text(
+                                      'Nothing is scheduled to collect for '
+                                      'this billing period. Use Edit paid or '
+                                      'Edit remaining if you need to change amounts.',
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, 'close'),
+                                        child: const Text('Close'),
+                                      ),
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, 'paid'),
+                                        child: const Text('Edit paid'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, 'due'),
+                                        child: const Text('Edit remaining'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (!context.mounted) return;
+                                if (choice == 'paid') {
+                                  await _editPaid(context, repo, c, today);
+                                } else if (choice == 'due') {
+                                  await _editDue(context, repo, c, today);
+                                }
+                                return;
+                              }
+
+                              final before = c;
+                              final amount = await showCollectedAmountDialog(
+                                context,
+                                suggestedRupees: pmt.amount.round(),
+                                title: 'Add Payment — ${pmt.customerName}',
+                              );
+                              if (!context.mounted || amount == null) {
+                                return;
+                              }
+                              await repo.recordPaymentCollection(
+                                pmt.customerId,
+                                pmt.kind!,
+                                collectedAmountRupees: amount,
+                              );
+                              if (!context.mounted) {
+                                return;
+                              }
+                              await scheduleAfterFrame(() async {
+                                final root = rootNavigatorContext;
+                                final dialogCtx =
+                                    root != null && root.mounted ? root : context;
+                                if (!dialogCtx.mounted) {
+                                  return null;
+                                }
+                                final action = await showDialog<String>(
+                                  context: dialogCtx,
+                                  useRootNavigator: true,
+                                  builder: (ctx) =>
+                                      const _PaymentRecordedReceiptDialog(),
+                                );
+                                if (!dialogCtx.mounted) {
+                                  return null;
+                                }
+                                if (action == 'pdf') {
+                                  await downloadPaymentReceiptPdf(
+                                    customer: c,
+                                    collectedAmountRupees: amount,
+                                    paymentLabel: pmt.dueLabel,
+                                    collectedAt: DateTime.now(),
+                                    collectedBy: repo.currentUsername,
+                                  );
+                                } else if (action == 'wa') {
+                                  await sendReceiptToWhatsApp(
+                                    dialogCtx,
+                                    customer: c,
+                                    collectedAmountRupees: amount,
+                                    paymentLabel: pmt.dueLabel,
+                                    collectedAt: DateTime.now(),
+                                    collectedBy: repo.currentUsername,
+                                  );
+                                }
+                                if (!dialogCtx.mounted) {
+                                  return null;
+                                }
+                                showPaymentRecordedWithUndo(
+                                  dialogCtx,
+                                  repo,
+                                  before,
+                                );
+                                return null;
+                              });
+                            }
 
                             return Card(
+                              elevation: 0,
+                              color: cs.surfaceContainerLow,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(
+                                  color: cs.outlineVariant.withValues(alpha: 0.55),
+                                ),
+                              ),
                               child: Padding(
-                                padding: const EdgeInsets.all(16),
+                                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -324,10 +499,13 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                 c.name,
                                                 style: Theme.of(context)
                                                     .textTheme
-                                                    .titleMedium,
+                                                    .titleSmall
+                                                    ?.copyWith(
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
                                               ),
                                               if (c.phone.isNotEmpty) ...[
-                                                const SizedBox(height: 4),
+                                                const SizedBox(height: 2),
                                                 Text(
                                                   c.phone,
                                                   style: Theme.of(context)
@@ -344,202 +522,251 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                         ),
                                       ],
                                     ),
-                                    const SizedBox(height: 10),
+                                    const SizedBox(height: 6),
+                                    Wrap(
+                                      spacing: 6,
+                                      runSpacing: 6,
+                                      children: [
+                                        _AmountBadge(
+                                          label: 'Total',
+                                          value: currency.format(c.planPriceRupees),
+                                          color: cs.tertiary,
+                                        ),
+                                        _AmountBadge(
+                                          label: 'Paid',
+                                          value: currency.format(paid),
+                                          color: cs.primary,
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
                                     Row(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
                                         Expanded(
-                                          child: Row(
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  'Paid (period): ${currency.format(paid)}',
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodyMedium
-                                                      ?.copyWith(
-                                                        color: cs.primary,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                      ),
-                                                ),
-                                              ),
-                                              IconButton(
-                                                tooltip:
-                                                    'Edit paid (this period)',
-                                                icon: const Icon(
-                                                  Icons.edit_outlined,
-                                                  size: 18,
-                                                ),
-                                                visualDensity:
-                                                    VisualDensity.compact,
-                                                padding: EdgeInsets.zero,
-                                                constraints:
-                                                    const BoxConstraints(
-                                                  minWidth: 28,
-                                                  minHeight: 28,
-                                                ),
-                                                onPressed: _canEditPeriodAmounts(
-                                                        c, today)
-                                                    ? () => _editPaid(
-                                                          context,
-                                                          repo,
-                                                          c,
-                                                          today,
-                                                        )
-                                                    : null,
-                                              ),
-                                            ],
+                                          child: _AmountBadge(
+                                            label: 'Remaining',
+                                            value: remaining > 0
+                                                ? currency.format(remaining)
+                                                : currency.format(0),
+                                            color: remaining > 0
+                                                ? cs.error
+                                                : cs.onSurfaceVariant,
                                           ),
                                         ),
-                                        Expanded(
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.end,
-                                            children: [
-                                              Flexible(
-                                                child: Text(
-                                                  remaining > 0
-                                                      ? 'Due: ${currency.format(remaining)}'
-                                                      : 'Due: —',
-                                                  textAlign: TextAlign.end,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodyMedium
-                                                      ?.copyWith(
-                                                        color: remaining > 0
-                                                            ? cs.error
-                                                            : cs
-                                                                .onSurfaceVariant,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                      ),
+                                        const SizedBox(width: 6),
+                                        Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.end,
+                                          children: [
+                                            if (remaining > 0) ...[
+                                              OutlinedButton.icon(
+                                                style: OutlinedButton.styleFrom(
+                                                  foregroundColor:
+                                                      const Color(0xFF25D366),
+                                                  side: const BorderSide(
+                                                    color: Color(0xFF25D366),
+                                                  ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 6,
+                                                  ),
+                                                  tapTargetSize: MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                                  visualDensity:
+                                                      VisualDensity.compact,
                                                 ),
-                                              ),
-                                              IconButton(
-                                                tooltip: 'Edit amount due',
                                                 icon: const Icon(
-                                                  Icons.edit_outlined,
-                                                  size: 18,
+                                                  Icons.chat_outlined,
+                                                  size: 16,
                                                 ),
-                                                visualDensity:
-                                                    VisualDensity.compact,
-                                                padding: EdgeInsets.zero,
-                                                constraints:
-                                                    const BoxConstraints(
-                                                  minWidth: 28,
-                                                  minHeight: 28,
+                                                label: const Text(
+                                                  'Send msg',
+                                                  style: TextStyle(fontSize: 12),
                                                 ),
-                                                onPressed: _canEditPeriodAmounts(
-                                                        c, today)
-                                                    ? () => _editDue(
-                                                          context,
-                                                          repo,
-                                                          c,
-                                                          today,
-                                                        )
-                                                    : null,
+                                                onPressed: () =>
+                                                    openPaymentPendingWhatsApp(
+                                                  context,
+                                                  phone: c.phone,
+                                                  remainingRupees: remaining,
+                                                ),
                                               ),
+                                              const SizedBox(height: 4),
+                                            ] else if (remaining == 0 &&
+                                                repo.isAdmin) ...[
+                                              OutlinedButton.icon(
+                                                style: OutlinedButton.styleFrom(
+                                                  foregroundColor: cs.error,
+                                                  side: BorderSide(
+                                                    color: cs.error,
+                                                  ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 6,
+                                                  ),
+                                                  tapTargetSize: MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                ),
+                                                icon: const Icon(
+                                                  Icons.delete_outline,
+                                                  size: 16,
+                                                ),
+                                                label: const Text(
+                                                  'Delete',
+                                                  style: TextStyle(fontSize: 12),
+                                                ),
+                                                onPressed: () async {
+                                                  final shouldDelete =
+                                                      await showDialog<bool>(
+                                                    context: context,
+                                                    builder: (ctx) =>
+                                                        AlertDialog(
+                                                      title: const Text(
+                                                        'Delete customer',
+                                                      ),
+                                                      content: Text(
+                                                        'Delete "${c.name}"? '
+                                                        'This cannot be undone.',
+                                                      ),
+                                                      actions: [
+                                                        TextButton(
+                                                          onPressed: () =>
+                                                              Navigator.of(ctx)
+                                                                  .pop(false),
+                                                          child:
+                                                              const Text('Cancel'),
+                                                        ),
+                                                        FilledButton(
+                                                          onPressed: () =>
+                                                              Navigator.of(ctx)
+                                                                  .pop(true),
+                                                          child: const Text(
+                                                            'Delete',
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  );
+                                                  if (shouldDelete != true ||
+                                                      !context.mounted) {
+                                                    return;
+                                                  }
+                                                  await repo.deleteCustomer(c.id);
+                                                  if (!context.mounted) return;
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        '${c.name} deleted.',
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                              const SizedBox(height: 4),
                                             ],
-                                          ),
+                                            FilledButton.icon(
+                                              style: FilledButton.styleFrom(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                  vertical: 6,
+                                                ),
+                                                tapTargetSize: MaterialTapTargetSize
+                                                    .shrinkWrap,
+                                              ),
+                                              icon: const Icon(
+                                                Icons.payments_outlined,
+                                                size: 16,
+                                              ),
+                                              onPressed: onCollectPressed,
+                                              label: Text(
+                                                !inBillingWindow
+                                                    ? 'Outside period'
+                                                    : remaining > 0
+                                                        ? 'Collect payment'
+                                                        : 'No payment due',
+                                                style:
+                                                    const TextStyle(fontSize: 13),
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ],
                                     ),
-                                    const SizedBox(height: 12),
-                                    Align(
-                                      alignment: Alignment.centerRight,
-                                      child: FilledButton.tonal(
-                                        onPressed: pmt == null ||
-                                                pmt.kind == null
-                                            ? null
-                                            : () async {
-                                                final before = c;
-                                                final amount =
-                                                    await showCollectedAmountDialog(
-                                                  context,
-                                                  suggestedRupees:
-                                                      pmt.amount.round(),
-                                                  title:
-                                                      'Add Payment — ${pmt.customerName}',
-                                                );
-                                                if (!context.mounted ||
-                                                    amount == null) {
-                                                  return;
-                                                }
-                                                await repo
-                                                    .recordPaymentCollection(
-                                                  pmt.customerId,
-                                                  pmt.kind!,
-                                                  collectedAmountRupees:
-                                                      amount,
-                                                );
-                                                if (!context.mounted) {
-                                                  return;
-                                                }
-                                                await scheduleAfterFrame(
-                                                    () async {
-                                                  final root =
-                                                      rootNavigatorContext;
-                                                  final dialogCtx = root !=
-                                                              null &&
-                                                          root.mounted
-                                                      ? root
-                                                      : context;
-                                                  if (!dialogCtx.mounted) {
-                                                    return null;
-                                                  }
-                                                  final action =
-                                                      await showDialog<String>(
-                                                    context: dialogCtx,
-                                                    useRootNavigator: true,
-                                                    builder: (ctx) =>
-                                                        const _PaymentRecordedReceiptDialog(),
-                                                  );
-                                                  if (!dialogCtx.mounted) {
-                                                    return null;
-                                                  }
-                                                  if (action == 'pdf') {
-                                                    await downloadPaymentReceiptPdf(
-                                                      customer: c,
-                                                      collectedAmountRupees:
-                                                          amount,
-                                                      paymentLabel:
-                                                          pmt.dueLabel,
-                                                      collectedAt:
-                                                          DateTime.now(),
-                                                      collectedBy: repo
-                                                          .currentUsername,
-                                                    );
-                                                  } else if (action ==
-                                                      'wa') {
-                                                    await sendReceiptToWhatsApp(
-                                                      dialogCtx,
-                                                      customer: c,
-                                                      collectedAmountRupees:
-                                                          amount,
-                                                      paymentLabel:
-                                                          pmt.dueLabel,
-                                                      collectedAt:
-                                                          DateTime.now(),
-                                                      collectedBy: repo
-                                                          .currentUsername,
-                                                    );
-                                                  }
-                                                  if (!dialogCtx.mounted) {
-                                                    return null;
-                                                  }
-                                                  showPaymentRecordedWithUndo(
-                                                    dialogCtx,
-                                                    repo,
-                                                    before,
-                                                  );
-                                                  return null;
-                                                });
-                                              },
-                                        child: const Text('Add Payment'),
+                                    if (canEditPeriod) ...[
+                                      const SizedBox(height: 4),
+                                      Wrap(
+                                        spacing: 0,
+                                        runSpacing: 0,
+                                        children: [
+                                          TextButton.icon(
+                                            style: TextButton.styleFrom(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                                vertical: 4,
+                                              ),
+                                              visualDensity: VisualDensity.compact,
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize.shrinkWrap,
+                                            ),
+                                            onPressed: () => _editPaid(
+                                              context,
+                                              repo,
+                                              c,
+                                              today,
+                                            ),
+                                            icon: Icon(
+                                              Icons.edit_outlined,
+                                              size: 14,
+                                              color: cs.primary,
+                                            ),
+                                            label: Text(
+                                              'Edit paid',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: cs.primary,
+                                              ),
+                                            ),
+                                          ),
+                                          TextButton.icon(
+                                            style: TextButton.styleFrom(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                                vertical: 4,
+                                              ),
+                                              visualDensity: VisualDensity.compact,
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize.shrinkWrap,
+                                            ),
+                                            onPressed: () => _editDue(
+                                              context,
+                                              repo,
+                                              c,
+                                              today,
+                                            ),
+                                            icon: Icon(
+                                              Icons.edit_outlined,
+                                              size: 14,
+                                              color: cs.error,
+                                            ),
+                                            label: Text(
+                                              'Edit remaining',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: cs.error,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -622,21 +849,21 @@ class _SummaryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: color, size: 28),
-        const SizedBox(width: 10),
+        Icon(icon, color: color, size: 20),
+        const SizedBox(width: 6),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 label,
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
               ),
               Text(
                 value,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w700,
                       color: color,
                     ),
@@ -645,6 +872,51 @@ class _SummaryTile extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AmountBadge extends StatelessWidget {
+  const _AmountBadge({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.55)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                  fontSize: 10,
+                ),
+          ),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
     );
   }
 }

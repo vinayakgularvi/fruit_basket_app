@@ -16,9 +16,22 @@ import '../models/subscription_plan.dart';
 import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_sort.dart';
 import '../utils/payment_schedule.dart';
+import '../utils/phone_launch.dart';
 import 'customer_firestore.dart';
 import 'leads_firestore.dart';
 import 'needed_fruit_firestore.dart';
+
+class DeliveryAgentCompensation {
+  const DeliveryAgentCompensation({
+    required this.username,
+    required this.weeklyAllowanceRupees,
+    required this.perOrderRupees,
+  });
+
+  final String username;
+  final int weeklyAllowanceRupees;
+  final int perOrderRupees;
+}
 
 class AppRepository extends ChangeNotifier {
   AppRepository();
@@ -27,11 +40,38 @@ class AppRepository extends ChangeNotifier {
   static const _kSessionUsername = 'session_username';
   static const _kSessionRole = 'session_role';
 
+  /// Prefs key per slot — same stop order every day until admin changes it.
   static String _manualDeliveryOrderPrefsKey(DeliverySlot slot) {
-    final n = dateOnly(DateTime.now());
-    final day =
-        '${n.year}-${n.month.toString().padLeft(2, '0')}-${n.day.toString().padLeft(2, '0')}';
-    return 'delivery_route_order_${slot.name}_$day';
+    return 'delivery_route_order_${slot.name}';
+  }
+
+  /// Reads newest `delivery_route_order_{slot}_yyyy-MM-dd` value if present (one-time migration).
+  static String? _legacyDatedManualOrderCsv(
+    SharedPreferences prefs,
+    DeliverySlot slot,
+  ) {
+    final prefix = 'delivery_route_order_${slot.name}_';
+    String? bestKey;
+    for (final k in prefs.getKeys()) {
+      if (!k.startsWith(prefix)) continue;
+      final suffix = k.substring(prefix.length);
+      if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(suffix)) continue;
+      if (bestKey == null || k.compareTo(bestKey) > 0) bestKey = k;
+    }
+    if (bestKey == null) return null;
+    return prefs.getString(bestKey);
+  }
+
+  static Future<void> _migrateLegacyDatedManualOrderKeys(
+    SharedPreferences prefs,
+    DeliverySlot slot,
+    String csv,
+  ) async {
+    final prefix = 'delivery_route_order_${slot.name}_';
+    await prefs.setString(_manualDeliveryOrderPrefsKey(slot), csv);
+    for (final k in prefs.getKeys().toList()) {
+      if (k.startsWith(prefix)) await prefs.remove(k);
+    }
   }
 
   final List<Customer> _customers = [];
@@ -48,6 +88,7 @@ class AppRepository extends ChangeNotifier {
       StreamController<List<Lead>>.broadcast();
   Set<String> _leadIdsAtLastMerge = {};
   bool _leadsInitialSnapshotDone = false;
+  DateTime? _lastExpiredLeadsPurgeAt;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _deliveryCompletionSub;
   final StreamController<List<DeliveryCompletionEvent>>
       _newDeliveryCompletionsController =
@@ -61,7 +102,9 @@ class AppRepository extends ChangeNotifier {
   String? _userRole;
   String? _currentUsername;
   List<String> _deliveryAgentUsernames = const [];
-  /// Saved customer id order for admin “Custom” route (per slot, per calendar day).
+  final Map<String, DeliveryAgentCompensation> _deliveryAgentCompByUsername =
+      {};
+  /// Saved customer id order for admin “Custom” route (per slot; reused daily).
   final Map<DeliverySlot, List<String>> _manualDeliveryOrderBySlot = {};
   /// False until the first Firestore snapshot arrives (or after [refreshCustomers]).
   bool _customersReady = true;
@@ -182,7 +225,12 @@ class AppRepository extends ChangeNotifier {
     }
     return activeCustomers().length;
   }
-  int get perOrderPayoutRupees => 10;
+  int get perOrderPayoutRupees {
+    if (isDeliveryAgent && _currentUsername != null) {
+      return deliveryAgentPerOrderRupees(_currentUsername!);
+    }
+    return 10;
+  }
   int get todayDeliveryPayoutRupees => todayDeliveryCount * perOrderPayoutRupees;
   int get newCustomersPendingApprovalCount => _customers
       .where((c) => c.customerCreated && !c.adminApproved)
@@ -295,13 +343,19 @@ class AppRepository extends ChangeNotifier {
   Future<void> loadManualDeliveryRouteOrders() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _manualDeliveryOrderBySlot.clear();
       for (final slot in DeliverySlot.values) {
-        final raw = prefs.getString(_manualDeliveryOrderPrefsKey(slot));
+        var raw = prefs.getString(_manualDeliveryOrderPrefsKey(slot));
+        if (raw == null || raw.isEmpty) {
+          final legacy = _legacyDatedManualOrderCsv(prefs, slot);
+          if (legacy != null && legacy.isNotEmpty) {
+            raw = legacy;
+            await _migrateLegacyDatedManualOrderKeys(prefs, slot, legacy);
+          }
+        }
         if (raw != null && raw.isNotEmpty) {
           _manualDeliveryOrderBySlot[slot] =
               raw.split(',').where((s) => s.isNotEmpty).toList();
-        } else {
-          _manualDeliveryOrderBySlot.remove(slot);
         }
       }
       notifyListeners();
@@ -648,6 +702,12 @@ class AppRepository extends ChangeNotifier {
   Future<void> _refreshDeliveryAgentUsers() async {
     if (_firestore == null) {
       _deliveryAgentUsernames = const ['alfa'];
+      _deliveryAgentCompByUsername.clear();
+      _deliveryAgentCompByUsername['alfa'] = const DeliveryAgentCompensation(
+        username: 'alfa',
+        weeklyAllowanceRupees: 0,
+        perOrderRupees: 10,
+      );
       return;
     }
     final snap = await _firestore!
@@ -655,11 +715,26 @@ class AppRepository extends ChangeNotifier {
         .where('role', isEqualTo: 'delivery_agent')
         .where('active', isEqualTo: true)
         .get();
-    _deliveryAgentUsernames = snap.docs
-        .map((d) => (d.data()['username'] as String? ?? '').trim())
-        .where((u) => u.isNotEmpty)
-        .toList()
-      ..sort();
+    final names = <String>[];
+    final comps = <String, DeliveryAgentCompensation>{};
+    for (final d in snap.docs) {
+      final data = d.data();
+      final username = (data['username'] as String? ?? '').trim();
+      if (username.isEmpty) continue;
+      names.add(username);
+      final weekly = (data['weeklyAllowanceRupees'] as num?)?.toInt() ?? 0;
+      final perOrder = (data['perOrderRupees'] as num?)?.toInt() ?? 10;
+      comps[username] = DeliveryAgentCompensation(
+        username: username,
+        weeklyAllowanceRupees: weekly < 0 ? 0 : weekly,
+        perOrderRupees: perOrder < 0 ? 0 : perOrder,
+      );
+    }
+    names.sort();
+    _deliveryAgentUsernames = names;
+    _deliveryAgentCompByUsername
+      ..clear()
+      ..addAll(comps);
   }
 
   Future<void> addDeliveryAgentUser({
@@ -675,8 +750,69 @@ class AppRepository extends ChangeNotifier {
       'password': p,
       'role': 'delivery_agent',
       'active': true,
+      'weeklyAllowanceRupees': 0,
+      'perOrderRupees': 10,
       'updatedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    await _refreshDeliveryAgentUsers();
+    notifyListeners();
+  }
+
+  DeliveryAgentCompensation deliveryAgentCompensation(String username) {
+    final u = username.trim();
+    final v = _deliveryAgentCompByUsername[u];
+    if (v != null) return v;
+    return DeliveryAgentCompensation(
+      username: u,
+      weeklyAllowanceRupees: 0,
+      perOrderRupees: 10,
+    );
+  }
+
+  int deliveryAgentWeeklyAllowanceRupees(String username) =>
+      deliveryAgentCompensation(username).weeklyAllowanceRupees;
+
+  int deliveryAgentPerOrderRupees(String username) =>
+      deliveryAgentCompensation(username).perOrderRupees;
+
+  int estimatedMonthlyOrdersForAgent(String username) {
+    final u = username.trim();
+    if (u.isEmpty) return 0;
+    final assignedActive = _customers
+        .where((c) => c.active && c.assignedDeliveryAgentUsername == u)
+        .length;
+    return assignedActive * BillingPeriod.monthly.deliveryDays;
+  }
+
+  int estimatedMonthlyCompensationRupees(
+    String username, {
+    int? weeklyAllowanceRupees,
+    int? perOrderRupees,
+  }) {
+    final weekly =
+        weeklyAllowanceRupees ?? deliveryAgentWeeklyAllowanceRupees(username);
+    final perOrder = perOrderRupees ?? deliveryAgentPerOrderRupees(username);
+    final monthlyOrders = estimatedMonthlyOrdersForAgent(username);
+    return (weekly * 4) + (perOrder * monthlyOrders);
+  }
+
+  Future<void> updateDeliveryAgentCompensation({
+    required String username,
+    required int weeklyAllowanceRupees,
+    required int perOrderRupees,
+  }) async {
+    final u = username.trim();
+    if (u.isEmpty) return;
+    final weekly = weeklyAllowanceRupees < 0 ? 0 : weeklyAllowanceRupees;
+    final perOrder = perOrderRupees < 0 ? 0 : perOrderRupees;
+    if (_firestore == null) return;
+    await _firestore!.collection('users').doc(u).set({
+      'username': u,
+      'role': 'delivery_agent',
+      'weeklyAllowanceRupees': weekly,
+      'perOrderRupees': perOrder,
+      'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await _refreshDeliveryAgentUsers();
     notifyListeners();
@@ -794,6 +930,7 @@ class AppRepository extends ChangeNotifier {
     _neededFruits.clear();
     _leadIdsAtLastMerge = {};
     _leadsInitialSnapshotDone = false;
+    _lastExpiredLeadsPurgeAt = null;
     _deliveryEventIdsAtLastMerge = {};
     _deliveryEventsInitialSnapshotDone = false;
     unawaited(_clearSession());
@@ -858,6 +995,95 @@ class AppRepository extends ChangeNotifier {
       '(root docs=${root?.docs.length ?? "-"}, '
       'group docs=${group?.docs.length ?? "-"})',
     );
+
+    unawaited(_maybePurgeExpiredLeads());
+  }
+
+  static const Duration _leadRetention = Duration(days: 30);
+  static const Duration _leadPurgeThrottle = Duration(hours: 6);
+
+  Future<void> _commitBatchedDeletes(
+    List<DocumentReference<Map<String, dynamic>>> refs,
+  ) async {
+    if (_firestore == null || refs.isEmpty) return;
+    const chunk = 450;
+    for (var i = 0; i < refs.length; i += chunk) {
+      final batch = _firestore!.batch();
+      final end = i + chunk > refs.length ? refs.length : i + chunk;
+      for (var j = i; j < end; j++) {
+        batch.delete(refs[j]);
+      }
+      await batch.commit();
+    }
+  }
+
+  /// Deletes leads whose [Lead.mobile] matches [customerPhone] (all `leads` paths).
+  Future<void> _deleteLeadsMatchingCustomerPhone(String customerPhone) async {
+    if (!_firebaseReady || _firestore == null) return;
+    if (phoneMatchKey(customerPhone).isEmpty) return;
+    try {
+      final snap = await _firestore!.collectionGroup('leads').get();
+      final refs = <DocumentReference<Map<String, dynamic>>>[];
+      for (final d in snap.docs) {
+        final lead = leadFromFirestore(d);
+        if (leadMobileMatchesCustomerPhone(lead.mobile, customerPhone)) {
+          refs.add(d.reference);
+        }
+      }
+      if (refs.isEmpty) return;
+      await _commitBatchedDeletes(refs);
+      _leads.removeWhere(
+        (l) => leadMobileMatchesCustomerPhone(l.mobile, customerPhone),
+      );
+      debugPrint(
+        'Removed ${refs.length} lead(s) matching customer phone '
+        '(converted to customer).',
+      );
+      notifyListeners();
+    } on FirebaseException catch (e, st) {
+      debugPrint('_deleteLeadsMatchingCustomerPhone: ${e.code} ${e.message}\n$st');
+    } catch (e, st) {
+      debugPrint('_deleteLeadsMatchingCustomerPhone: $e\n$st');
+    }
+  }
+
+  Future<void> _maybePurgeExpiredLeads() async {
+    if (!_firebaseReady || _firestore == null) return;
+    final now = DateTime.now();
+    if (_lastExpiredLeadsPurgeAt != null &&
+        now.difference(_lastExpiredLeadsPurgeAt!) < _leadPurgeThrottle) {
+      return;
+    }
+    _lastExpiredLeadsPurgeAt = now;
+    await _purgeExpiredLeadsOlderThanRetention();
+  }
+
+  /// Deletes leads with [Lead.createdAt] older than [_leadRetention] (requires `createdAt` on doc).
+  Future<void> _purgeExpiredLeadsOlderThanRetention() async {
+    if (!_firebaseReady || _firestore == null) return;
+    try {
+      final snap = await _firestore!.collectionGroup('leads').get();
+      final cutoff = DateTime.now().subtract(_leadRetention);
+      final refs = <DocumentReference<Map<String, dynamic>>>[];
+      for (final d in snap.docs) {
+        final lead = leadFromFirestore(d);
+        final t = lead.createdAt;
+        if (t == null) continue;
+        if (t.isBefore(cutoff)) {
+          refs.add(d.reference);
+        }
+      }
+      if (refs.isEmpty) return;
+      await _commitBatchedDeletes(refs);
+      final paths = refs.map((r) => r.path).toSet();
+      _leads.removeWhere((l) => paths.contains(l.id));
+      debugPrint(
+        'Purged ${refs.length} lead(s) older than ${_leadRetention.inDays} days.',
+      );
+      notifyListeners();
+    } on FirebaseException catch (e, st) {
+      debugPrint('_purgeExpiredLeadsOlderThanRetention: ${e.code} ${e.message}\n$st');
+    }
   }
 
   void _onDeliveryCompletionSnapshot(
@@ -1152,6 +1378,11 @@ class AppRepository extends ChangeNotifier {
             .doc(customer.id)
             .set(customerToFirestore(customer));
         debugPrint('Firestore: wrote customers/${customer.id}');
+        try {
+          await _deleteLeadsMatchingCustomerPhone(customer.phone);
+        } catch (e, st) {
+          debugPrint('delete leads after addCustomer: $e\n$st');
+        }
         return;
       } on FirebaseException catch (e, st) {
         debugPrint(
@@ -1181,6 +1412,11 @@ class AppRepository extends ChangeNotifier {
             .doc(customer.id)
             .set(customerToFirestore(customer));
         debugPrint('Firestore: updated customers/${customer.id}');
+        try {
+          await _deleteLeadsMatchingCustomerPhone(customer.phone);
+        } catch (e, st) {
+          debugPrint('delete leads after updateCustomer: $e\n$st');
+        }
       } on FirebaseException catch (e, st) {
         debugPrint(
           'Firestore updateCustomer failed: code=${e.code} message=${e.message}\n$st',
@@ -1297,11 +1533,12 @@ class AppRepository extends ChangeNotifier {
     final i = _customers.indexWhere((c) => c.id == customerId);
     if (i < 0) return;
     final c = _customers[i];
-    final today = dateOnly(DateTime.now());
-    final pStart = periodStartForDate(c, today);
+    final todayClock = dateOnly(DateTime.now());
+    final anchor = paymentScheduleAnchorDate(c, todayClock);
+    final pStart = periodStartForDate(c, anchor);
     if (pStart == null) return;
 
-    final due = paymentDueForCustomer(c, today);
+    final due = paymentDueForCustomer(c, anchor);
     if (due == null || !collectionKindMatchesDue(kind, due.kind)) return;
 
     final dueNow = due.amountRupees;
@@ -1376,13 +1613,14 @@ class AppRepository extends ChangeNotifier {
     if (i < 0) return;
     final c = _customers[i];
     if (!c.active) return;
-    final today = dateOnly(DateTime.now());
-    final pStart = periodStartForDate(c, today);
+    final todayClock = dateOnly(DateTime.now());
+    final anchor = paymentScheduleAnchorDate(c, todayClock);
+    final pStart = periodStartForDate(c, anchor);
     if (pStart == null) return;
 
     final plan = c.planPriceRupees;
     final v = newDueRupees.clamp(0, plan);
-    final due = paymentDueForCustomer(c, today);
+    final due = paymentDueForCustomer(c, anchor);
 
     if (v == 0) {
       if (due != null) {

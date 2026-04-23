@@ -93,6 +93,16 @@ String? _validateOptionalPaymentAmount(String? v) {
   return null;
 }
 
+String? _validateOptionalDiscountedPlanPrice(String? v) {
+  final t = v?.trim() ?? '';
+  if (t.isEmpty) return null;
+  final n = int.tryParse(t);
+  if (n == null) return 'Enter a valid amount in rupees';
+  if (n < 1) return 'Amount must be at least ₹1';
+  if (n > 99999999) return 'Amount is too large';
+  return null;
+}
+
 class AddCustomerScreen extends StatefulWidget {
   const AddCustomerScreen({super.key, this.existing});
 
@@ -117,6 +127,8 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   final _notes = TextEditingController();
   final _deliveryTimeCustom = TextEditingController();
   final _initialPaymentAmount = TextEditingController();
+  /// Optional override; when empty, [planPriceRupees] uses catalog for tier + billing.
+  final _discountedPlanPrice = TextEditingController();
   DeliverySlot _slot = DeliverySlot.morning;
 
   String _deliveryTimePreset = '';
@@ -150,6 +162,10 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       _assignedDeliveryAgentUsername = e.assignedDeliveryAgentUsername;
       _strictDeliveryTime = e.strictDeliveryTime;
       _applyDeliveryTimeFromCustomer(e);
+      final catalog = planPriceRupees(e.planTier, e.billingPeriod);
+      if (e.planPriceRupees != catalog) {
+        _discountedPlanPrice.text = e.planPriceRupees.toString();
+      }
     } else {
       _startDate = dateOnly(DateTime.now());
     }
@@ -173,6 +189,13 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   DateTime get _endDate => endDateForBilling(_startDate, _billingPeriod);
 
   int get _planPrice => planPriceRupees(_planTier, _billingPeriod);
+
+  /// Saved plan price: optional discounted/custom amount, else catalog.
+  int get _effectivePlanPriceRupees {
+    final t = _discountedPlanPrice.text.trim();
+    if (t.isEmpty) return _planPrice;
+    return int.tryParse(t) ?? _planPrice;
+  }
 
   String get _resolvedRequestedDeliveryTime {
     if (_deliveryTimePreset == _kDeliveryTimeOther) {
@@ -202,6 +225,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     _address.dispose();
     _deliveryTimeCustom.dispose();
     _initialPaymentAmount.dispose();
+    _discountedPlanPrice.dispose();
     _notes.dispose();
     super.dispose();
   }
@@ -266,7 +290,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       preferredSlot: _slot,
       planTier: _planTier,
       billingPeriod: _billingPeriod,
-      planPriceRupees: _planPrice,
+      planPriceRupees: _effectivePlanPriceRupees,
       startDate: dateOnly(_startDate),
       endDate: _endDate,
       requestedDeliveryTime: time,
@@ -528,6 +552,25 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                 ),
               );
             }),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _discountedPlanPrice,
+              keyboardType: TextInputType.number,
+              maxLength: 9,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                labelText: 'Discounted plan price (₹, optional)',
+                hintText: 'Leave blank for catalog price',
+                helperText:
+                    'Catalog is ₹$_planPrice / ${_billingPeriod.priceUnitWord}. '
+                    'If you enter an amount, that becomes the plan price for '
+                    'payments and receipts.',
+                prefixText: '₹ ',
+                counterText: '',
+              ),
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              validator: _validateOptionalDiscountedPlanPrice,
+            ),
             const SizedBox(height: 8),
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -773,15 +816,40 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Selected plan total',
+                            'Plan price',
                             style: Theme.of(context).textTheme.labelLarge,
                           ),
                           Text(
-                            '₹$_planPrice / ${_billingPeriod.priceUnitWord}',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
+                            'Catalog: ₹$_planPrice / ${_billingPeriod.priceUnitWord}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: cs.onSurfaceVariant,
                                 ),
                           ),
+                          if (_discountedPlanPrice.text.trim().isNotEmpty &&
+                              _effectivePlanPriceRupees != _planPrice) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Saved as: ₹$_effectivePlanPriceRupees / ${_billingPeriod.priceUnitWord}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: cs.primary,
+                                  ),
+                            ),
+                          ] else ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              '₹$_planPrice / ${_billingPeriod.priceUnitWord}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                          ],
                         ],
                       ),
                     ),

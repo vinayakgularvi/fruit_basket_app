@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,9 +8,10 @@ import '../models/customer.dart';
 import '../models/delivery_slot.dart';
 import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_optimizer.dart';
-import '../utils/delivery_route_sort.dart';
 import '../utils/maps_links.dart';
 import '../utils/phone_launch.dart';
+
+enum _AdminRouteOrder { byTime, custom }
 
 class DeliveryScreen extends StatefulWidget {
   const DeliveryScreen({super.key});
@@ -17,19 +20,37 @@ class DeliveryScreen extends StatefulWidget {
   State<DeliveryScreen> createState() => _DeliveryScreenState();
 }
 
-class _DeliveryScreenState extends State<DeliveryScreen> {
+class _DeliveryScreenState extends State<DeliveryScreen>
+    with WidgetsBindingObserver {
   DeliverySlot _slot = DeliverySlot.morning;
-  DeliveryListSort _sort = DeliveryListSort.byRequestedTime;
   final _search = TextEditingController();
 
-  /// Depot / vehicle start (WGS84). Used for distance sort and leg distances.
-  double _routeStartLat = 13.36139;
-  double _routeStartLng = 77.11169;
+  /// Admin-only: custom uses saved drag order and allows reorder; by time uses
+  /// the optimized route (same as delivery view).
+  _AdminRouteOrder _adminRouteOrder = _AdminRouteOrder.custom;
+
+  /// Default route start for leg-distance metrics (no in-app editor).
+  static const LatLng _kRouteStart = LatLng(13.36139, 77.11169);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _search.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(context.read<AppRepository>().loadManualDeliveryRouteOrders());
+    }
   }
 
   bool _matchesDeliverySearch(String name, String phone, String query) {
@@ -49,76 +70,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     return noUrls.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   }
 
-  Future<void> _editRouteStart(BuildContext context) async {
-    final latCtrl =
-        TextEditingController(text: _routeStartLat.toStringAsFixed(5));
-    final lngCtrl =
-        TextEditingController(text: _routeStartLng.toStringAsFixed(5));
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Route start (depot)'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: latCtrl,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-                signed: true,
-              ),
-              decoration: const InputDecoration(
-                labelText: 'Latitude',
-                hintText: 'e.g. 12.9716',
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: lngCtrl,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-                signed: true,
-              ),
-              decoration: const InputDecoration(
-                labelText: 'Longitude',
-                hintText: 'e.g. 77.5946',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    final la = double.tryParse(latCtrl.text.trim());
-    final lo = double.tryParse(lngCtrl.text.trim());
-    latCtrl.dispose();
-    lngCtrl.dispose();
-    if (ok == true &&
-        mounted &&
-        la != null &&
-        lo != null &&
-        la >= -90 &&
-        la <= 90 &&
-        lo >= -180 &&
-        lo <= 180) {
-      setState(() {
-        _routeStartLat = la;
-        _routeStartLng = lo;
-      });
-    }
-  }
-
   Widget _deliveryStopCard({
-    required Key key,
+    Key? key,
     required BuildContext context,
     required AppRepository repo,
     required Customer c,
@@ -126,119 +79,181 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     required double? legKm,
     required ColorScheme cs,
   }) {
-    final checked = repo.isDeliveryChecked(c.id);
+    final delivered = repo.isDeliveryChecked(c.id);
     final hasMapsLink = mapsUriFromAddress(c.address) != null;
+    final theme = Theme.of(context);
+    final addr = _addressWithoutUrls(c.address);
+    const actionStyle = ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      ),
+      minimumSize: WidgetStatePropertyAll(Size(104, 36)),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+
     return Card(
       key: key,
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 6),
+      elevation: 0,
+      color: cs.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      clipBehavior: Clip.antiAlias,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
+        padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Checkbox(
-                value: checked,
-                onChanged: (_) => repo.toggleDeliveryDone(c.id),
-              ),
-            ),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    legKm != null
-                        ? 'Stop ${routeIndex + 1} · ${legKm.toStringAsFixed(1)} km'
-                        : 'Stop ${routeIndex + 1}',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: cs.tertiary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    c.name,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          decoration:
-                              checked ? TextDecoration.lineThrough : null,
-                          color: checked ? cs.onSurfaceVariant : null,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
                   Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Expanded(
-                        child: Text(
-                          c.phone,
-                          style: Theme.of(context).textTheme.bodyMedium,
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: cs.tertiaryContainer,
+                          borderRadius: BorderRadius.circular(6),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Call',
-                        icon: const Icon(Icons.phone_outlined, size: 22),
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(
-                          minWidth: 40,
-                          minHeight: 40,
-                        ),
-                        onPressed: () =>
-                            openCustomerPhoneDialer(context, c.phone),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _addressWithoutUrls(c.address),
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  ),
-                  if (c.requestedDeliveryTime.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Time: ${c.requestedDeliveryTime}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(
-                                  color: cs.tertiary,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
                           ),
-                        ),
-                        if (c.strictDeliveryTime)
-                          Tooltip(
-                            message: 'Strict delivery time',
-                            child: Icon(
-                              Icons.schedule,
-                              size: 18,
-                              color: cs.error,
+                          child: Text(
+                            legKm != null
+                                ? '${routeIndex + 1} · ${legKm.toStringAsFixed(1)} km'
+                                : '${routeIndex + 1}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: cs.onTertiaryContainer,
+                              fontWeight: FontWeight.w700,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
                             ),
                           ),
+                        ),
+                      ),
+                      if (c.strictDeliveryTime) ...[
+                        const SizedBox(width: 6),
+                        Tooltip(
+                          message: 'Strict delivery time',
+                          child: Icon(
+                            Icons.schedule,
+                            size: 16,
+                            color: cs.error,
+                          ),
+                        ),
                       ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    c.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      height: 1.2,
+                      fontWeight: FontWeight.w600,
+                      decoration:
+                          delivered ? TextDecoration.lineThrough : null,
+                      color: delivered ? cs.onSurfaceVariant : null,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    c.phone,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                  if (addr.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      addr,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        height: 1.25,
+                      ),
                     ),
                   ],
-                  if (hasMapsLink) ...[
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.tonalIcon(
-                        onPressed: () =>
-                            openAddressInGoogleMaps(context, c.address),
-                        icon: const Icon(Icons.map_outlined, size: 20),
-                        label: const Text('Open GMaps'),
+                  if (c.requestedDeliveryTime.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: cs.secondaryContainer.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        child: Text(
+                          c.requestedDeliveryTime,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: cs.onSecondaryContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ],
               ),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                FilledButton.tonalIcon(
+                  style: actionStyle,
+                  onPressed: () =>
+                      openCustomerPhoneDialer(context, c.phone),
+                  icon: Icon(
+                    Icons.phone_outlined,
+                    size: 18,
+                    color: cs.primary,
+                  ),
+                  label: const Text('Call'),
+                ),
+                if (hasMapsLink) ...[
+                  const SizedBox(height: 6),
+                  FilledButton.tonalIcon(
+                    style: actionStyle,
+                    onPressed: () =>
+                        openAddressInGoogleMaps(context, c.address),
+                    icon: Icon(
+                      Icons.pin_drop,
+                      size: 18,
+                      color: cs.primary,
+                    ),
+                    label: const Text('Maps'),
+                  ),
+                ],
+                const SizedBox(height: 6),
+                if (delivered)
+                  OutlinedButton(
+                    style: actionStyle,
+                    onPressed: () => repo.toggleDeliveryDone(c.id),
+                    child: const Text('Undo'),
+                  )
+                else
+                  FilledButton(
+                    style: actionStyle,
+                    onPressed: () => repo.toggleDeliveryDone(c.id),
+                    child: const Text('Delivered'),
+                  ),
+              ],
             ),
           ],
         ),
@@ -250,34 +265,30 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
     final base = repo.customersInDeliverySlot(_slot);
-    final start = LatLng(_routeStartLat, _routeStartLng);
-    final routeSort =
-        repo.isAdmin ? _sort : DeliveryListSort.byRequestedTime;
-    final customMode =
-        repo.isAdmin && routeSort == DeliveryListSort.custom;
+    const start = _kRouteStart;
+    final isAdmin = repo.isAdmin;
+    final isDeliveryAgent = repo.isDeliveryAgent;
+    final useCustomOrder =
+        isDeliveryAgent || (isAdmin && _adminRouteOrder == _AdminRouteOrder.custom);
 
     late List<Customer> list;
     late List<double?> routeKm;
-    if (customMode) {
+    if (useCustomOrder) {
       final fb = optimizeDeliveryRouteByRequestedTime(base, start);
       list = repo.orderedCustomersForCustomRoute(_slot, base, fb.customers);
-      final optCustom = routeMetricsForCustomerOrder(list, start);
-      routeKm = optCustom.kmFromPrevious;
-    } else if (routeSort == DeliveryListSort.byOptimizedRoute) {
-      final opt = optimizeDeliveryRoute(base, start);
-      list = opt.customers;
-      routeKm = opt.kmFromPrevious;
     } else {
       final opt = optimizeDeliveryRouteByRequestedTime(base, start);
       list = opt.customers;
-      routeKm = opt.kmFromPrevious;
     }
 
-    list = prioritizeSubscriptionLastDay(list);
+    // Admin custom order is authoritative; do not re-sort last-day plans ahead.
+    if (!useCustomOrder) {
+      list = prioritizeSubscriptionLastDay(list);
+    }
     routeKm = routeMetricsForCustomerOrder(list, start).kmFromPrevious;
 
     final done = repo.completedCountForSlot(_slot);
-    final displayList = customMode
+    final displayList = useCustomOrder
         ? List<Customer>.from(list)
         : <Customer>[
             ...list.where((c) => !repo.isDeliveryChecked(c.id)),
@@ -291,7 +302,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     final cs = Theme.of(context).colorScheme;
     final routeTotalKm =
         routeKm.whereType<double>().fold(0.0, (a, b) => a + b);
-    final allowDragReorder = customMode && _search.text.trim().isEmpty;
+    final allowDragReorder =
+        isAdmin && useCustomOrder && _search.text.trim().isEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -299,12 +311,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         actions: repo.isDeliveryAgent
             ? null
             : [
-                IconButton(
-                  tooltip: 'Set route start (depot)',
-                  icon: const Icon(Icons.edit_location_alt_outlined),
-                  onPressed:
-                      list.isEmpty ? null : () => _editRouteStart(context),
-                ),
                 TextButton(
                   onPressed: list.isEmpty
                       ? null
@@ -339,42 +345,26 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               },
             ),
           ),
-          if (!repo.isDeliveryAgent)
+          if (isAdmin)
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: SegmentedButton<DeliveryListSort>(
-                segments: [
-                  const ButtonSegment(
-                    value: DeliveryListSort.byOptimizedRoute,
-                    label: Text('Shortest'),
-                    icon: Icon(Icons.route_outlined),
-                  ),
-                  const ButtonSegment(
-                    value: DeliveryListSort.byRequestedTime,
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+              child: SegmentedButton<_AdminRouteOrder>(
+                segments: const [
+                  ButtonSegment(
+                    value: _AdminRouteOrder.byTime,
                     label: Text('By time'),
                     icon: Icon(Icons.schedule_outlined),
                   ),
-                  if (repo.isAdmin)
-                    const ButtonSegment(
-                      value: DeliveryListSort.custom,
-                      label: Text('Custom'),
-                      icon: Icon(Icons.drag_indicator),
-                    ),
+                  ButtonSegment(
+                    value: _AdminRouteOrder.custom,
+                    label: Text('Custom'),
+                    icon: Icon(Icons.swap_vert),
+                  ),
                 ],
-                selected: {routeSort},
+                selected: {_adminRouteOrder},
                 onSelectionChanged: (s) {
-                  setState(() => _sort = s.first);
+                  setState(() => _adminRouteOrder = s.first);
                 },
-              ),
-            ),
-          if (allowDragReorder)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
-              child: Text(
-                'Drag the handle on each row to reorder. Saved for today.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: cs.onSurfaceVariant,
-                    ),
               ),
             ),
           Padding(
@@ -400,37 +390,6 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               ),
             ),
           ),
-          if (list.isNotEmpty && !repo.isDeliveryAgent)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Material(
-                color: cs.surfaceContainerHighest.withValues(alpha: 0.65),
-                borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  onTap: () => _editRouteStart(context),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                    child: Row(
-                      children: [
-                        Icon(Icons.place_outlined, color: cs.primary, size: 22),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Depot ${_routeStartLat.toStringAsFixed(4)}, ${_routeStartLng.toStringAsFixed(4)}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleSmall
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
           Expanded(
             child: repo.customersLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -495,7 +454,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                       16,
                                       24,
                                     ),
-                                    buildDefaultDragHandles: true,
+                                    buildDefaultDragHandles: false,
                                     itemCount: filteredDisplay.length,
                                     onReorder: (oldIndex, newIndex) async {
                                       if (newIndex > oldIndex) newIndex--;
@@ -518,14 +477,17 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                               routeIndex < routeKm.length
                                           ? routeKm[routeIndex]
                                           : null;
-                                      return _deliveryStopCard(
+                                      return ReorderableDragStartListener(
+                                        index: i,
                                         key: ValueKey(c.id),
-                                        context: context,
-                                        repo: repo,
-                                        c: c,
-                                        routeIndex: routeIndex,
-                                        legKm: legKm,
-                                        cs: cs,
+                                        child: _deliveryStopCard(
+                                          context: context,
+                                          repo: repo,
+                                          c: c,
+                                          routeIndex: routeIndex,
+                                          legKm: legKm,
+                                          cs: cs,
+                                        ),
                                       );
                                     },
                                   )
