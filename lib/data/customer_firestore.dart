@@ -86,6 +86,9 @@ Map<String, dynamic> customerToFirestore(Customer c) {
     'pendingDueRemainingRupees': c.pendingDueRemainingRupees,
     'customerCreated': c.customerCreated,
     'adminApproved': c.adminApproved,
+    'deletedAt': c.deletedAt == null
+        ? null
+        : Timestamp.fromDate(c.deletedAt!),
     'updatedAt': FieldValue.serverTimestamp(),
   };
 }
@@ -172,6 +175,9 @@ Customer customerFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     pendingDueRemainingRupees: _optionalInt(d['pendingDueRemainingRupees']),
     customerCreated: d['customerCreated'] as bool? ?? true,
     adminApproved: d['adminApproved'] as bool? ?? false,
+    deletedAt: d['deletedAt'] == null
+        ? null
+        : _coerceDate(d['deletedAt'], id, 'deletedAt'),
   );
 }
 

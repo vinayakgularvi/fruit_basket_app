@@ -7,4 +7,6 @@ enum CustomerListFilter {
   inactiveOnly,
   createdPendingApproval,
   lastDayOfPlan,
+  /// Soft-deleted in the last 30 days (restore or wait for auto-purge).
+  recentlyDeleted,
 }

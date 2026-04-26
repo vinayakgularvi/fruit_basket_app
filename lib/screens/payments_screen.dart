@@ -617,25 +617,28 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                       VisualDensity.compact,
                                                 ),
                                                 icon: const Icon(
-                                                  Icons.delete_outline,
+                                                  Icons.restart_alt_outlined,
                                                   size: 16,
                                                 ),
                                                 label: const Text(
-                                                  'Delete',
+                                                  'Clear payment',
                                                   style: TextStyle(fontSize: 12),
                                                 ),
                                                 onPressed: () async {
-                                                  final shouldDelete =
+                                                  final ok =
                                                       await showDialog<bool>(
                                                     context: context,
                                                     builder: (ctx) =>
                                                         AlertDialog(
                                                       title: const Text(
-                                                        'Delete customer',
+                                                        'Clear this period’s payment',
                                                       ),
                                                       content: Text(
-                                                        'Delete "${c.name}"? '
-                                                        'This cannot be undone.',
+                                                        'Remove the recorded payment for '
+                                                        '"${c.name}" for the current billing '
+                                                        'period? The customer stays on file; '
+                                                        'the full plan amount will show as due '
+                                                        'again.',
                                                       ),
                                                       actions: [
                                                         TextButton(
@@ -650,23 +653,27 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                                               Navigator.of(ctx)
                                                                   .pop(true),
                                                           child: const Text(
-                                                            'Delete',
+                                                            'Clear payment',
                                                           ),
                                                         ),
                                                       ],
                                                     ),
                                                   );
-                                                  if (shouldDelete != true ||
+                                                  if (ok != true ||
                                                       !context.mounted) {
                                                     return;
                                                   }
-                                                  await repo.deleteCustomer(c.id);
+                                                  await repo
+                                                      .clearCurrentPeriodPayment(
+                                                    c.id,
+                                                  );
                                                   if (!context.mounted) return;
                                                   ScaffoldMessenger.of(context)
                                                       .showSnackBar(
                                                     SnackBar(
                                                       content: Text(
-                                                        '${c.name} deleted.',
+                                                        'Payment cleared for '
+                                                        '${c.name}.',
                                                       ),
                                                     ),
                                                   );

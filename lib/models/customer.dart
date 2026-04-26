@@ -33,7 +33,11 @@ class Customer {
     this.adminApproved = false,
     this.secondaryPlanTier,
     this.secondaryPlanPriceRupees = 0,
+    this.deletedAt,
   });
+
+  /// How long a soft-deleted customer doc is kept before [AppRepository] purges it.
+  static const Duration softDeleteRetention = Duration(days: 30);
 
   final String id;
   final String name;
@@ -78,10 +82,22 @@ class Customer {
   final bool customerCreated;
   final bool adminApproved;
 
+  /// When set, the customer is hidden from routes and normal lists until restored
+  /// or [softDeleteRetention] elapses (then the doc is removed from Firestore).
+  final DateTime? deletedAt;
+
   /// Combined period price for payments, receipts, and due calculations.
   int get totalPlanPriceRupees =>
       planPriceRupees +
       (secondaryPlanTier != null ? secondaryPlanPriceRupees : 0);
+
+  bool get isSoftDeleted => deletedAt != null;
+
+  /// True while [asOf] is still before the auto-purge time (exclusive of purged docs).
+  bool isSoftDeleteRecoverable(DateTime asOf) {
+    if (deletedAt == null) return false;
+    return asOf.isBefore(deletedAt!.add(softDeleteRetention));
+  }
 
   Customer copyWith({
     String? id,
@@ -117,6 +133,9 @@ class Customer {
     bool clearPendingDue = false,
     bool clearAssignedDeliveryAgent = false,
     bool clearSecondaryPlan = false,
+    bool clearLastPayment = false,
+    DateTime? deletedAt,
+    bool clearDeletedAt = false,
   }) {
     return Customer(
       id: id ?? this.id,
@@ -146,10 +165,13 @@ class Customer {
       weeklyPeriodPaid: weeklyPeriodPaid ?? this.weeklyPeriodPaid,
       monthlyAdvancePaid: monthlyAdvancePaid ?? this.monthlyAdvancePaid,
       monthlyBalancePaid: monthlyBalancePaid ?? this.monthlyBalancePaid,
-      lastPaymentAmountRupees:
-          lastPaymentAmountRupees ?? this.lastPaymentAmountRupees,
-      lastPaymentAt: lastPaymentAt ?? this.lastPaymentAt,
-      lastPaymentKind: lastPaymentKind ?? this.lastPaymentKind,
+      lastPaymentAmountRupees: clearLastPayment
+          ? null
+          : (lastPaymentAmountRupees ?? this.lastPaymentAmountRupees),
+      lastPaymentAt:
+          clearLastPayment ? null : (lastPaymentAt ?? this.lastPaymentAt),
+      lastPaymentKind:
+          clearLastPayment ? null : (lastPaymentKind ?? this.lastPaymentKind),
       pendingDueKind:
           clearPendingDue ? null : (pendingDueKind ?? this.pendingDueKind),
       pendingDueRemainingRupees: clearPendingDue
@@ -163,6 +185,7 @@ class Customer {
       secondaryPlanPriceRupees: clearSecondaryPlan
           ? 0
           : (secondaryPlanPriceRupees ?? this.secondaryPlanPriceRupees),
+      deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
     );
   }
 }

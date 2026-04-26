@@ -267,6 +267,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
   ) {
     // `repo.customers` is unmodifiable; sort() requires a mutable list.
     var list = List<Customer>.from(all);
+    if (f == CustomerListFilter.recentlyDeleted) {
+      final now = DateTime.now();
+      list = list
+          .where(
+            (c) => c.deletedAt != null && c.isSoftDeleteRecoverable(now),
+          )
+          .toList();
+    } else {
+      list = list.where((c) => c.deletedAt == null).toList();
+    }
+
     final q = query.trim().toLowerCase();
     if (q.isNotEmpty) {
       list = list.where((c) {
@@ -275,10 +286,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
             c.address.toLowerCase().contains(q);
       }).toList();
     }
-    final hideInactiveByDefault = f == CustomerListFilter.all ||
-        f == CustomerListFilter.morning ||
-        f == CustomerListFilter.evening ||
-        f == CustomerListFilter.lastDayOfPlan;
+    final hideInactiveByDefault = f != CustomerListFilter.recentlyDeleted &&
+        (f == CustomerListFilter.all ||
+            f == CustomerListFilter.morning ||
+            f == CustomerListFilter.evening ||
+            f == CustomerListFilter.lastDayOfPlan);
     if (hideInactiveByDefault) {
       list = list.where((c) => c.active).toList();
     }
@@ -307,6 +319,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
         break;
       case CustomerListFilter.lastDayOfPlan:
         list = list.where(subscriptionLastDayToday).toList();
+        break;
+      case CustomerListFilter.recentlyDeleted:
         break;
     }
     list.sort((a, b) => a.name.compareTo(b.name));
@@ -454,6 +468,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   onSelected: () =>
                       setState(() => _filter = CustomerListFilter.lastDayOfPlan),
                 ),
+                _FilterChip(
+                  label: 'Recently deleted',
+                  selected: _filter == CustomerListFilter.recentlyDeleted,
+                  onSelected: () => setState(
+                    () => _filter = CustomerListFilter.recentlyDeleted,
+                  ),
+                ),
               ],
             ),
           ),
@@ -473,7 +494,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                     MediaQuery.sizeOf(context).height * 0.35,
                                 child: Center(
                                   child: Text(
-                                    'No customers match your search.',
+                                    _filter ==
+                                            CustomerListFilter.recentlyDeleted
+                                        ? 'No recently deleted customers '
+                                            '(or past the 30-day recovery window).'
+                                        : 'No customers match your search.',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodyLarge
@@ -499,7 +524,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
                       final dtf = DateFormat.yMMMd().add_jm();
                       final periodShort = c.billingPeriod.listAbbrev;
                       return GestureDetector(
-                        onLongPress: repo.isAdmin && !_selectionMode
+                        onLongPress: repo.isAdmin &&
+                                !_selectionMode &&
+                                c.deletedAt == null
                             ? () => setState(() {
                                   _selectionMode = true;
                                   _selectedIds
@@ -523,6 +550,62 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
+                                if (c.deletedAt != null) ...[
+                                  DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: cs.errorContainer
+                                          .withValues(alpha: 0.45),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          Text(
+                                            'Removed ${dtf.format(c.deletedAt!)}. '
+                                            'Auto-purged after '
+                                            '${Customer.softDeleteRetention.inDays} '
+                                            'days (about '
+                                            '${dtf.format(c.deletedAt!.add(Customer.softDeleteRetention))}).',
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          FilledButton.icon(
+                                            onPressed: () async {
+                                              await repo
+                                                  .restoreDeletedCustomer(
+                                                c.id,
+                                              );
+                                              if (!context.mounted) return;
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    '${c.name} restored.',
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                            icon: const Icon(
+                                              Icons.restore_outlined,
+                                            ),
+                                            label: const Text(
+                                              'Restore customer',
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                ],
                                 Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -664,7 +747,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                         ),
                                       ],
                                     ),
-                                    if (subscriptionLastDayToday(c)) ...[
+                                    if (subscriptionLastDayToday(c) &&
+                                        c.deletedAt == null) ...[
                                       const SizedBox(height: 10),
                                       Material(
                                         elevation: 0,
@@ -926,6 +1010,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               ),
                             ],
                           ),
+                          if (c.deletedAt == null) ...[
                           Divider(
                             height: 22,
                             thickness: 1,
@@ -988,7 +1073,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                       builder: (ctx) => AlertDialog(
                                         title: const Text('Delete customer'),
                                         content: Text(
-                                          'Delete "${c.name}"? This cannot be undone.',
+                                          'Remove "${c.name}" from active lists? '
+                                          'They stay in Recently deleted for '
+                                          '${Customer.softDeleteRetention.inDays} '
+                                          'days so you can restore them.',
                                         ),
                                         actions: [
                                           TextButton(
@@ -1010,7 +1098,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
                                         content: Text(
-                                          '${c.name} deleted.',
+                                          '${c.name} moved to Recently deleted.',
                                         ),
                                       ),
                                   );
@@ -1082,6 +1170,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                             ],
                           ),
                         ),
+                          ],
                       ],
                     ),
                   ),

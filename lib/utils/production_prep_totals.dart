@@ -39,6 +39,7 @@ bool isCustomerCountedForProductionPrep(
   DateTime calendarDay,
   DeliverySlot slot,
 ) {
+  if (c.deletedAt != null) return false;
   if (!c.active) return false;
   if (c.preferredSlot != slot) return false;
   final d = dateOnly(calendarDay);

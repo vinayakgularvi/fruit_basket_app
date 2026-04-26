@@ -296,12 +296,18 @@ class AppRepository extends ChangeNotifier {
 
   List<Customer> get customers => List.unmodifiable(_customers);
 
-  List<Customer> activeCustomers() =>
-      _customers.where((c) => c.active).toList();
+  List<Customer> activeCustomers() => _customers
+      .where((c) => c.active && c.deletedAt == null)
+      .toList();
 
   /// Active customers whose plan ends today (renew / inactive follow-up).
-  int get lastDayActiveCustomerCount =>
-      _customers.where(subscriptionLastDayToday).length;
+  int get lastDayActiveCustomerCount => _customers
+      .where(
+        (c) =>
+            c.deletedAt == null &&
+            subscriptionLastDayToday(c),
+      )
+      .length;
 
   int get todayDeliveryCount {
     if (isDeliveryAgent && _currentUsername != null) {
@@ -309,6 +315,7 @@ class AppRepository extends ChangeNotifier {
           .where(
             (c) =>
                 c.active &&
+                c.deletedAt == null &&
                 c.assignedDeliveryAgentUsername == _currentUsername,
           )
           .length;
@@ -323,7 +330,12 @@ class AppRepository extends ChangeNotifier {
   }
   int get todayDeliveryPayoutRupees => todayDeliveryCount * perOrderPayoutRupees;
   int get newCustomersPendingApprovalCount => _customers
-      .where((c) => c.customerCreated && !c.adminApproved)
+      .where(
+        (c) =>
+            c.deletedAt == null &&
+            c.customerCreated &&
+            !c.adminApproved,
+      )
       .length;
 
   /// Sum of active customers’ plan prices, scaled to an approximate monthly
@@ -394,7 +406,12 @@ class AppRepository extends ChangeNotifier {
   /// Active customers for [slot] (unsorted). Use for route optimization in UI.
   List<Customer> customersInDeliverySlot(DeliverySlot slot) {
     return _customers
-        .where((c) => c.active && c.preferredSlot == slot)
+        .where(
+          (c) =>
+              c.active &&
+              c.deletedAt == null &&
+              c.preferredSlot == slot,
+        )
         .toList();
   }
 
@@ -1082,7 +1099,12 @@ class AppRepository extends ChangeNotifier {
     final u = username.trim();
     if (u.isEmpty) return 0;
     final assignedActive = _customers
-        .where((c) => c.active && c.assignedDeliveryAgentUsername == u)
+        .where(
+          (c) =>
+              c.active &&
+              c.deletedAt == null &&
+              c.assignedDeliveryAgentUsername == u,
+        )
         .length;
     return assignedActive * BillingPeriod.monthly.deliveryDays;
   }
@@ -1245,6 +1267,7 @@ class AppRepository extends ChangeNotifier {
       ..clear()
       ..addAll(customersFromQueryDocs(snap.docs));
     _customersReady = true;
+    unawaited(_purgeExpiredSoftDeletedCustomers());
     notifyListeners();
   }
 
@@ -1483,6 +1506,7 @@ class AppRepository extends ChangeNotifier {
         ..clear()
         ..addAll(customersFromQueryDocs(snap.docs));
       _customersReady = true;
+      unawaited(_purgeExpiredSoftDeletedCustomers());
       notifyListeners();
       debugPrint('Firestore: refreshed customers (${_customers.length} docs)');
     } on FirebaseException catch (e, st) {
@@ -1717,7 +1741,10 @@ class AppRepository extends ChangeNotifier {
     );
   }
 
-  Future<void> updateCustomer(Customer customer) async {
+  Future<void> updateCustomer(
+    Customer customer, {
+    bool deleteMatchingLeadsForPhone = true,
+  }) async {
     final i = _customers.indexWhere((c) => c.id == customer.id);
     if (i >= 0) {
       _customers[i] = customer;
@@ -1730,10 +1757,12 @@ class AppRepository extends ChangeNotifier {
             .doc(customer.id)
             .set(customerToFirestore(customer));
         debugPrint('Firestore: updated customers/${customer.id}');
-        try {
-          await _deleteLeadsMatchingCustomerPhone(customer.phone);
-        } catch (e, st) {
-          debugPrint('delete leads after updateCustomer: $e\n$st');
+        if (deleteMatchingLeadsForPhone) {
+          try {
+            await _deleteLeadsMatchingCustomerPhone(customer.phone);
+          } catch (e, st) {
+            debugPrint('delete leads after updateCustomer: $e\n$st');
+          }
         }
       } on FirebaseException catch (e, st) {
         debugPrint(
@@ -1744,21 +1773,56 @@ class AppRepository extends ChangeNotifier {
     }
   }
 
+  /// Soft-delete: hides the customer for 30 days, then the doc is purged.
   Future<void> deleteCustomer(String customerId) async {
     final i = _customers.indexWhere((c) => c.id == customerId);
-    if (i >= 0) {
-      _customers.removeAt(i);
-      notifyListeners();
+    if (i < 0) return;
+    final c = _customers[i];
+    await updateCustomer(
+      c.copyWith(deletedAt: DateTime.now()),
+      deleteMatchingLeadsForPhone: false,
+    );
+  }
+
+  /// Clears [Customer.deletedAt] if still within the 30-day recovery window.
+  Future<void> restoreDeletedCustomer(String customerId) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    if (c.deletedAt == null) return;
+    if (!c.isSoftDeleteRecoverable(DateTime.now())) return;
+    await updateCustomer(
+      c.copyWith(clearDeletedAt: true),
+      deleteMatchingLeadsForPhone: false,
+    );
+  }
+
+  Future<void> _purgeExpiredSoftDeletedCustomers() async {
+    final now = DateTime.now();
+    final toRemoveIds = <String>[];
+    for (final c in _customers) {
+      if (c.deletedAt == null) continue;
+      if (c.isSoftDeleteRecoverable(now)) continue;
+      toRemoveIds.add(c.id);
     }
-    if (_firebaseReady && _firestore != null) {
+    if (toRemoveIds.isEmpty) return;
+    if (!_firebaseReady || _firestore == null) {
+      _customers.removeWhere((x) => toRemoveIds.contains(x.id));
+      notifyListeners();
+      debugPrint(
+        'Local: purged ${toRemoveIds.length} soft-deleted customer(s) past '
+        '${Customer.softDeleteRetention.inDays} days.',
+      );
+      return;
+    }
+    for (final id in toRemoveIds) {
       try {
-        await _firestore!.collection('customers').doc(customerId).delete();
-        debugPrint('Firestore: deleted customers/$customerId');
+        await _firestore!.collection('customers').doc(id).delete();
+        debugPrint('Firestore: purged expired soft-delete customers/$id');
       } on FirebaseException catch (e, st) {
         debugPrint(
-          'Firestore deleteCustomer failed: code=${e.code} message=${e.message}\n$st',
+          'purge soft-delete $id: code=${e.code} message=${e.message}\n$st',
         );
-        rethrow;
       }
     }
   }
@@ -2007,6 +2071,30 @@ class AppRepository extends ChangeNotifier {
         weeklyPeriodPaid: false,
         monthlyAdvancePaid: false,
         monthlyBalancePaid: false,
+      ),
+    );
+  }
+
+  /// Clears the current billing period’s payment flags so the full plan is due
+  /// again, and removes last-payment metadata. Does not delete the customer.
+  Future<void> clearCurrentPeriodPayment(String customerId) async {
+    final i = _customers.indexWhere((c) => c.id == customerId);
+    if (i < 0) return;
+    final c = _customers[i];
+    if (!c.active) return;
+    final todayClock = dateOnly(DateTime.now());
+    final anchor = paymentScheduleAnchorDate(c, todayClock);
+    final pStart = periodStartForDate(c, anchor);
+    if (pStart == null) return;
+
+    await updateCustomer(
+      c.copyWith(
+        paymentTrackedPeriodStart: pStart,
+        clearPendingDue: true,
+        weeklyPeriodPaid: false,
+        monthlyAdvancePaid: false,
+        monthlyBalancePaid: false,
+        clearLastPayment: true,
       ),
     );
   }

@@ -133,6 +133,7 @@ bool _isMonthlyPendingKind(String? k) =>
 /// Single highest-priority due item for [today] (null if nothing due).
 ({PaymentCollectionKind kind, int amountRupees, String label})?
     paymentDueForCustomer(Customer c, DateTime today) {
+  if (c.deletedAt != null) return null;
   if (!c.active) return null;
   final pStart = periodStartForDate(c, today);
   if (pStart == null) return null;

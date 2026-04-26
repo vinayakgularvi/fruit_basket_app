@@ -350,6 +350,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
       pendingDueRemainingRupees: editing?.pendingDueRemainingRupees,
       customerCreated: editing?.customerCreated ?? true,
       adminApproved: editing?.adminApproved ?? false,
+      deletedAt: editing?.deletedAt,
     );
 
     final initialAmtText = _initialPaymentAmount.text.trim();
