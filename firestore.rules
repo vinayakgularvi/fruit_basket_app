@@ -15,6 +15,9 @@ service cloud.firestore {
     match /needed_fruits/{fruitId} {
       allow read, write: if true;
     }
+    match /employees/{employeeId} {
+      allow read, write: if true;
+    }
     // Shared custom delivery stop order (morning / evening) for all devices.
     match /delivery_route_order/{docId} {
       allow read, write: if true;

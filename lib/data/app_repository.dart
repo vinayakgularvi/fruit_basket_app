@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' show max;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -8,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
 import '../models/customer.dart';
+import '../models/employee.dart';
 import '../models/delivery_completion_event.dart';
 import '../models/lead.dart';
 import '../models/needed_fruit.dart';
@@ -19,6 +19,7 @@ import '../utils/delivery_route_sort.dart';
 import '../utils/payment_schedule.dart';
 import '../utils/phone_launch.dart';
 import 'customer_firestore.dart';
+import 'employee_firestore.dart';
 import 'leads_firestore.dart';
 import 'needed_fruit_firestore.dart';
 
@@ -79,6 +80,7 @@ class AppRepository extends ChangeNotifier {
   final List<Customer> _customers = [];
   final List<Lead> _leads = [];
   final List<NeededFruit> _neededFruits = [];
+  final List<Employee> _employees = [];
   final Map<String, bool> _deliveryDoneToday = {};
   /// Calendar day shown on the delivery route screen (completions read/write).
   DateTime _deliveryRouteCalendarDay = dateOnly(DateTime.now());
@@ -86,6 +88,7 @@ class AppRepository extends ChangeNotifier {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsRootSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _leadsGroupSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _neededFruitsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _employeesSub;
   QuerySnapshot<Map<String, dynamic>>? _lastLeadsRootSnap;
   QuerySnapshot<Map<String, dynamic>>? _lastLeadsGroupSnap;
   final StreamController<List<Lead>> _newLeadsController =
@@ -103,6 +106,9 @@ class AppRepository extends ChangeNotifier {
   bool _deliveryEventsInitialSnapshotDone = false;
   FirebaseFirestore? _firestore;
   bool _firebaseReady = false;
+  /// Completes after Firestore is up and default users exist — login waits on this.
+  Completer<void>? _firebaseCoreCompleter;
+  bool _firebaseBootstrapReady = false;
   bool _isLoggedIn = false;
   bool _authLoading = false;
   String? _userRole;
@@ -117,8 +123,12 @@ class AppRepository extends ChangeNotifier {
   bool _customersReady = true;
   bool _leadsReady = true;
   bool _neededFruitsReady = true;
+  bool _employeesReady = true;
 
   bool get usesFirestore => _firebaseReady;
+  /// Logged-in users see a splash until Firestore reaches a minimal ready state.
+  bool get isAwaitingFirebaseBootstrap =>
+      _isLoggedIn && !_firebaseBootstrapReady;
   bool get isLoggedIn => _isLoggedIn;
   bool get authLoading => _authLoading;
   String? get userRole => _userRole;
@@ -226,7 +236,12 @@ class AppRepository extends ChangeNotifier {
   /// True while Firestore is connected but the first `needed_fruits` snapshot has not arrived.
   bool get neededFruitsLoading => usesFirestore && !_neededFruitsReady;
 
+  /// True while Firestore is connected but the first `employees` snapshot has not arrived.
+  bool get employeesLoading => usesFirestore && !_employeesReady;
+
   List<Lead> get leads => List.unmodifiable(_leads);
+
+  List<Employee> get employees => List.unmodifiable(_employees);
 
   List<NeededFruit> get neededFruits => List.unmodifiable(_neededFruits);
 
@@ -794,9 +809,22 @@ class AppRepository extends ChangeNotifier {
         .length;
   }
 
-  /// Call from `main()` before `runApp`. Uses Firestore database [kFirestoreDatabaseId].
+  /// Restore session from preferences only — safe to call before [runApp].
+  Future<void> restoreSessionEarly() => _restoreSession();
+
+  /// Reserve the Firebase bootstrap gate so login cannot run before [initFirebase]
+  /// assigns Firestore. Call after [restoreSessionEarly], before [runApp].
+  void prepareFirebaseStartupGate() {
+    if (firebaseOptionsArePlaceholder) return;
+    if (_firebaseCoreCompleter != null) return;
+    _firebaseCoreCompleter = Completer<void>();
+  }
+
+  /// Starts Firebase and listeners. Safe to call without awaiting from `main`
+  /// after [runApp] for faster first frame.
+  ///
+  /// Call [restoreSessionEarly] first so login routing is correct immediately.
   Future<void> initFirebase() async {
-    await _restoreSession();
     if (firebaseOptionsArePlaceholder) {
       debugPrint(
         'Firebase: replace REPLACE_ME in lib/firebase_options.dart '
@@ -804,9 +832,19 @@ class AppRepository extends ChangeNotifier {
         'Using local sample data.',
       );
       _seed();
+      _firebaseBootstrapReady = true;
       notifyListeners();
       return;
     }
+    final coreCompleter = _firebaseCoreCompleter ?? Completer<void>();
+    _firebaseCoreCompleter = coreCompleter;
+    void signalFirebaseBootstrapReady() {
+      _firebaseBootstrapReady = true;
+      if (!coreCompleter.isCompleted) {
+        coreCompleter.complete();
+      }
+    }
+
     try {
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
@@ -871,10 +909,6 @@ class AppRepository extends ChangeNotifier {
               notifyListeners();
             },
           );
-      await _ensureDefaultUser();
-      await _refreshDeliveryAgentUsers();
-      await _syncUserRoleFromFirestore();
-      _attachDeliveryCompletionSubscription();
       _neededFruitsSub?.cancel();
       _neededFruitsReady = false;
       _neededFruitsSub = _firestore!
@@ -892,21 +926,64 @@ class AppRepository extends ChangeNotifier {
               notifyListeners();
             },
           );
-      await loadManualDeliveryRouteOrders();
-      _subscribeDeliveryRouteOrder();
-      debugPrint(
-        'Firebase OK — project=${Firebase.app().options.projectId}, '
-        'Firestore customers + leads + needed_fruits, database=$kFirestoreDatabaseId',
-      );
+      _employeesSub?.cancel();
+      _employeesReady = false;
+      _employees.clear();
+      _employeesSub = _firestore!
+          .collection('employees')
+          .snapshots()
+          .listen(
+            _onEmployeesSnapshot,
+            onError: (Object e, StackTrace st) {
+              debugPrint(
+                'Firestore employees stream error (check rules for '
+                'match /employees/{id}): $e\n$st',
+              );
+              _employeesReady = true;
+              notifyListeners();
+            },
+          );
+      await _ensureDefaultUser();
+      _attachDeliveryCompletionSubscription();
+      signalFirebaseBootstrapReady();
       notifyListeners();
+
+      unawaited(_deferredFirebaseStartup());
     } catch (e, st) {
       debugPrint('Firebase init failed (check database ID & rules): $e\n$st');
       _firebaseReady = false;
       _firestore = null;
       _seed();
       await loadManualDeliveryRouteOrders();
+      signalFirebaseBootstrapReady();
       notifyListeners();
     }
+  }
+
+  Future<void> _deferredFirebaseStartup() async {
+    if (!_firebaseReady || _firestore == null) return;
+    try {
+      await _refreshDeliveryAgentUsers();
+      await _syncUserRoleFromFirestore();
+      await loadManualDeliveryRouteOrders();
+      _subscribeDeliveryRouteOrder();
+      debugPrint(
+        'Firebase OK — project=${Firebase.app().options.projectId}, '
+        'Firestore customers + leads + needed_fruits + employees, '
+        'database=$kFirestoreDatabaseId',
+      );
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('_deferredFirebaseStartup: $e\n$st');
+    }
+  }
+
+  Future<void> _waitUntilFirebaseBootstrapGate() async {
+    if (firebaseOptionsArePlaceholder) return;
+    final c = _firebaseCoreCompleter;
+    if (c == null) return;
+    if (c.isCompleted) return;
+    await c.future;
   }
 
   Future<void> _restoreSession() async {
@@ -1168,6 +1245,7 @@ class AppRepository extends ChangeNotifier {
     _authLoading = true;
     notifyListeners();
     try {
+      await _waitUntilFirebaseBootstrapGate();
       if (_firestore == null) {
         // Fallback for local/offline mode.
         final isAdmin =
@@ -1494,6 +1572,101 @@ class AppRepository extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onEmployeesSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
+    _employees.clear();
+    for (final d in snap.docs) {
+      try {
+        _employees.add(employeeFromFirestore(d));
+      } catch (e, st) {
+        debugPrint('Firestore employees/${d.id}: skipped — $e\n$st');
+      }
+    }
+    _employees.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    _employeesReady = true;
+    notifyListeners();
+  }
+
+  /// Creates a new employee document and returns its id. [draft] may use [Employee.empty] fields except profile data.
+  Future<String> addEmployee(Employee draft) async {
+    if (_firebaseReady && _firestore != null) {
+      try {
+        final docRef = _firestore!.collection('employees').doc();
+        final id = docRef.id;
+        final saved = draft.copyWith(id: id);
+        await docRef.set(employeeToFirestore(saved));
+        debugPrint('Firestore: wrote employees/$id');
+        return id;
+      } on FirebaseException catch (e, st) {
+        debugPrint(
+          'Firestore addEmployee failed: code=${e.code} message=${e.message}\n$st',
+        );
+        rethrow;
+      }
+    }
+    final id = 'local_e_${DateTime.now().millisecondsSinceEpoch}';
+    final saved = draft.copyWith(id: id);
+    _employees.add(saved);
+    _employees.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    _employeesReady = true;
+    notifyListeners();
+    debugPrint(
+      'addEmployee: local list only — Firebase not active.',
+    );
+    return id;
+  }
+
+  Future<void> updateEmployee(Employee employee) async {
+    final saved = employee;
+    final i = _employees.indexWhere((e) => e.id == saved.id);
+    if (i >= 0) {
+      _employees[i] = saved;
+      _employees.sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+      notifyListeners();
+    }
+    if (_firebaseReady && _firestore != null) {
+      try {
+        await _firestore!
+            .collection('employees')
+            .doc(saved.id)
+            .set(employeeToFirestore(saved));
+        debugPrint('Firestore: updated employees/${saved.id}');
+      } on FirebaseException catch (e, st) {
+        debugPrint(
+          'Firestore updateEmployee failed: code=${e.code} '
+          'message=${e.message}\n$st',
+        );
+        rethrow;
+      }
+    }
+  }
+
+  /// Removes the employee document from Firestore (or the local list when offline).
+  Future<void> deleteEmployee(String employeeId) async {
+    if (_firebaseReady && _firestore != null) {
+      try {
+        await _firestore!.collection('employees').doc(employeeId).delete();
+        debugPrint('Firestore: deleted employees/$employeeId');
+      } on FirebaseException catch (e, st) {
+        debugPrint(
+          'deleteEmployee failed: code=${e.code} message=${e.message}\n$st',
+        );
+        rethrow;
+      }
+      return;
+    }
+    final i = _employees.indexWhere((e) => e.id == employeeId);
+    if (i >= 0) {
+      _employees.removeAt(i);
+      notifyListeners();
+    }
+  }
+
   /// One-shot read (also used by pull-to-refresh). The real-time stream keeps updating after.
   Future<void> refreshCustomers() async {
     if (!_firebaseReady || _firestore == null) {
@@ -1552,6 +1725,32 @@ class AppRepository extends ChangeNotifier {
       debugPrint('Firestore: refreshed needed_fruits (${_neededFruits.length})');
     } on FirebaseException catch (e, st) {
       debugPrint('refreshNeededFruits failed: ${e.code} ${e.message}\n$st');
+    }
+  }
+
+  Future<void> refreshEmployees() async {
+    if (!_firebaseReady || _firestore == null) {
+      notifyListeners();
+      return;
+    }
+    try {
+      final snap = await _firestore!.collection('employees').get();
+      _employees.clear();
+      for (final d in snap.docs) {
+        try {
+          _employees.add(employeeFromFirestore(d));
+        } catch (e, st) {
+          debugPrint('refreshEmployees skip ${d.id}: $e\n$st');
+        }
+      }
+      _employees.sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+      _employeesReady = true;
+      notifyListeners();
+      debugPrint('Firestore: refreshed employees (${_employees.length})');
+    } on FirebaseException catch (e, st) {
+      debugPrint('refreshEmployees failed: ${e.code} ${e.message}\n$st');
     }
   }
 
@@ -1701,6 +1900,7 @@ class AppRepository extends ChangeNotifier {
     _customerSub?.cancel();
     _leadsRootSub?.cancel();
     _leadsGroupSub?.cancel();
+    _employeesSub?.cancel();
     _deliveryCompletionSub?.cancel();
     _deliveryRouteOrderSub?.cancel();
     if (!_newLeadsController.isClosed) {
@@ -1882,9 +2082,10 @@ class AppRepository extends ChangeNotifier {
       nextDates.add(skipDate);
     }
     nextDates.sort((a, b) => a.compareTo(b));
-    final nextSkipped = nextDates.length > c.skippedDeliveryDays
-        ? nextDates.length
-        : c.skippedDeliveryDays;
+    // One skipped calendar day ⇒ one extra delivery slot at the end of the plan.
+    // Always derive count from [skippedDeliveryDates] so a new skip always extends
+    // [endDate] (older data could have skippedDeliveryDays > dates.length).
+    final nextSkipped = nextDates.length;
     final newEnd = endDateAfterDeliveryDays(
       dateOnly(c.startDate),
       c.billingPeriod.deliveryDays + nextSkipped,
@@ -1915,7 +2116,7 @@ class AppRepository extends ChangeNotifier {
         .map(dateOnly)
         .toList()
       ..sort();
-    final nextSkipped = max(nextDates.length, c.skippedDeliveryDays - 1);
+    final nextSkipped = nextDates.length;
     final newEnd = endDateAfterDeliveryDays(
       dateOnly(c.startDate),
       c.billingPeriod.deliveryDays + nextSkipped,
@@ -2224,6 +2425,26 @@ class AppRepository extends ChangeNotifier {
       ..clear()
       ..addAll(_sampleNeededFruitsLocal());
     _neededFruitsReady = true;
+
+    _employees
+      ..clear()
+      ..addAll(_sampleEmployeesLocal());
+    _employeesReady = true;
+  }
+
+  List<Employee> _sampleEmployeesLocal() {
+    return [
+      Employee(
+        id: 'local_e1',
+        name: 'Sample Staff',
+        mobile: '+91 98765 40001',
+        address: 'Indiranagar, Bengaluru',
+        startDate: DateTime(2025, 4, 1),
+        salaryRupees: 18000,
+        incentiveRupees: 1500,
+        absentDates: [DateTime(2025, 11, 5)],
+      ),
+    ];
   }
 
   List<NeededFruit> _sampleNeededFruitsLocal() {

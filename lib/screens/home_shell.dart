@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import '../feature_flags.dart';
 import '../models/customer_list_filter.dart';
 import 'customers_screen.dart';
 import 'dashboard_screen.dart';
 import 'delivery_screen.dart';
+import 'employees_screen.dart';
 import 'leads_screen.dart';
 import 'needed_fruits_screen.dart';
 import 'payments_screen.dart';
@@ -44,14 +46,15 @@ class _HomeShellState extends State<HomeShell> {
       key: ValueKey('shell_cust_$_customersKey'),
       initialFilter: _customersInitialFilter,
     );
+    const emp = EmployeesScreen(key: ValueKey('shell_employees'));
     const leads = LeadsScreen(key: ValueKey('shell_leads'));
     const fruits = NeededFruitsScreen(key: ValueKey('shell_needed_fruits'));
     const del = DeliveryScreen(key: ValueKey('shell_delivery'));
     const pay = PaymentsScreen(key: ValueKey('shell_payments'));
     if (includeFruitsTab) {
-      return [dash, cust, leads, fruits, del, pay];
+      return [dash, cust, emp, leads, fruits, del, pay];
     }
-    return [dash, cust, leads, del, pay];
+    return [dash, cust, emp, leads, del, pay];
   }
 
   List<NavigationDestination> _adminBottomDestinations(bool includeFruitsTab) {
@@ -65,6 +68,11 @@ class _HomeShellState extends State<HomeShell> {
         icon: Icon(Icons.people_outline),
         selectedIcon: Icon(Icons.people),
         label: 'Customers',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.badge_outlined),
+        selectedIcon: Icon(Icons.badge),
+        label: 'Employees',
       ),
       const NavigationDestination(
         icon: Icon(Icons.inbox_outlined),
@@ -107,6 +115,11 @@ class _HomeShellState extends State<HomeShell> {
         icon: Icon(Icons.people_outline),
         selectedIcon: Icon(Icons.people),
         label: Text('Customers'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.badge_outlined),
+        selectedIcon: Icon(Icons.badge),
+        label: Text('Employees'),
       ),
       const NavigationRailDestination(
         icon: Icon(Icons.inbox_outlined),
@@ -170,7 +183,8 @@ class _HomeShellState extends State<HomeShell> {
     final deliveryOnly = repo.isDeliveryAgent;
     final fruitBuyerOnly =
         repo.isFruitBuyer && !repo.isAdmin && !repo.isDeliveryAgent;
-    final showFruitsTab = repo.isAdmin || repo.isFruitBuyer;
+    final showFruitsTab =
+        FeatureFlags.showFruitBuyUi && (repo.isAdmin || repo.isFruitBuyer);
 
     final screens = deliveryOnly
         ? [
@@ -181,15 +195,22 @@ class _HomeShellState extends State<HomeShell> {
             const DeliveryScreen(key: ValueKey('shell_delivery_agent')),
           ]
         : fruitBuyerOnly
-            ? [
-                const DashboardScreen(
-                  key: ValueKey('shell_dash_fruit_buyer'),
-                  onOpenCustomersFilter: null,
-                ),
-                const NeededFruitsScreen(
-                  key: ValueKey('shell_needed_fruits_fruit_buyer'),
-                ),
-              ]
+            ? FeatureFlags.showFruitBuyUi
+                ? [
+                    const DashboardScreen(
+                      key: ValueKey('shell_dash_fruit_buyer'),
+                      onOpenCustomersFilter: null,
+                    ),
+                    const NeededFruitsScreen(
+                      key: ValueKey('shell_needed_fruits_fruit_buyer'),
+                    ),
+                  ]
+                : [
+                    const DashboardScreen(
+                      key: ValueKey('shell_dash_fruit_buyer'),
+                      onOpenCustomersFilter: null,
+                    ),
+                  ]
             : _adminScreens(showFruitsTab);
     final nav = deliveryOnly
         ? const [
@@ -205,15 +226,37 @@ class _HomeShellState extends State<HomeShell> {
             ),
           ]
         : fruitBuyerOnly
-            ? _fruitBuyerNav
+            ? (FeatureFlags.showFruitBuyUi
+                ? _fruitBuyerNav
+                : const [
+                    NavigationDestination(
+                      icon: Icon(Icons.dashboard_outlined),
+                      selectedIcon: Icon(Icons.dashboard),
+                      label: 'Home',
+                    ),
+                  ])
             : _adminBottomDestinations(showFruitsTab);
     final railDestinations = deliveryOnly
         ? const <NavigationRailDestination>[]
         : fruitBuyerOnly
-            ? _fruitBuyerRail
+            ? (FeatureFlags.showFruitBuyUi
+                ? _fruitBuyerRail
+                : const [
+                    NavigationRailDestination(
+                      icon: Icon(Icons.dashboard_outlined),
+                      selectedIcon: Icon(Icons.dashboard),
+                      label: Text('Home'),
+                    ),
+                  ])
             : _adminRailDestinations(showFruitsTab);
 
-    final selectedIndex = _index >= screens.length ? 0 : _index;
+    final screenCount = screens.length;
+    if (_index >= screenCount) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _index = 0);
+      });
+    }
+    final selectedIndex = _index >= screenCount ? 0 : _index;
     final width = MediaQuery.sizeOf(context).width;
     final useSideNav = !deliveryOnly && width >= _kSideNavBreakpoint;
 

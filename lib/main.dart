@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -12,15 +14,19 @@ import 'widgets/new_leads_notification_listener.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initNewLeadNotifications();
   final repo = AppRepository();
-  await repo.initFirebase();
+  await repo.restoreSessionEarly();
+  repo.prepareFirebaseStartupGate();
   runApp(
     ChangeNotifierProvider(
       create: (_) => repo,
       child: const FruitBasketApp(),
     ),
   );
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(initNewLeadNotifications());
+  });
+  unawaited(repo.initFirebase());
 }
 
 class FruitBasketApp extends StatelessWidget {
@@ -47,6 +53,9 @@ class _AuthGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repo = context.watch<AppRepository>();
+    if (repo.isAwaitingFirebaseBootstrap) {
+      return const _BootstrapSplash();
+    }
     return repo.isLoggedIn
         ? const NewLeadsNotificationListener(
             child: DeliveryCompletionNotificationListener(
@@ -54,5 +63,38 @@ class _AuthGate extends StatelessWidget {
             ),
           )
         : const LoginScreen();
+  }
+}
+
+/// Shown briefly while Firestore connects for a restored session (first paint is fast).
+class _BootstrapSplash extends StatelessWidget {
+  const _BootstrapSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.storefront_outlined,
+              size: 56,
+              color: scheme.primary,
+            ),
+            const SizedBox(height: 28),
+            SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                color: scheme.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

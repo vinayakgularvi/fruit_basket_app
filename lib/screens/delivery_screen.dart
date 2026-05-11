@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/app_repository.dart';
 import '../models/customer.dart';
 import '../models/delivery_slot.dart';
+import '../models/subscription_plan.dart';
 import '../utils/delivery_plan_dates.dart';
 import '../utils/delivery_route_optimizer.dart';
 import '../utils/maps_links.dart';
@@ -182,6 +183,54 @@ class _DeliveryScreenState extends State<DeliveryScreen>
     );
   }
 
+  List<Widget> _deliveryPlanPackTags({
+    required Customer c,
+    required ThemeData theme,
+    required ColorScheme cs,
+    required bool delivered,
+  }) {
+    final tags = deliveryPackTagsForPlans(
+      planTier: c.planTier,
+      secondaryPlanTier: c.secondaryPlanTier,
+    );
+    if (tags.isEmpty) return const [];
+    return [
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: tags.map((label) {
+          final isSize = label == 'Small' ||
+              label == 'Medium' ||
+              label == 'Large';
+          final bg = isSize
+              ? cs.primaryContainer.withValues(alpha: delivered ? 0.45 : 1)
+              : cs.secondaryContainer
+                  .withValues(alpha: delivered ? 0.45 : 0.85);
+          final fg =
+              isSize ? cs.onPrimaryContainer : cs.onSecondaryContainer;
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              child: Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: fg,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    ];
+  }
+
   Widget _deliveryStopCard({
     Key? key,
     required BuildContext context,
@@ -276,6 +325,12 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                           delivered ? TextDecoration.lineThrough : null,
                       color: delivered ? cs.onSurfaceVariant : null,
                     ),
+                  ),
+                  ..._deliveryPlanPackTags(
+                    c: c,
+                    theme: theme,
+                    cs: cs,
+                    delivered: delivered,
                   ),
                   const SizedBox(height: 2),
                   Text(

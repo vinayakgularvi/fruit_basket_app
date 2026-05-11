@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../data/app_repository.dart';
+import '../feature_flags.dart';
 import '../models/customer_list_filter.dart';
 import '../models/delivery_slot.dart';
 import '../utils/production_prep_totals.dart';
@@ -359,7 +360,7 @@ class DashboardScreen extends StatelessWidget {
                             '₹${weeklyAllowance * 4}/month allowance',
                       ),
                     ]
-                  : fruitBuyerHome
+                  : fruitBuyerHome && FeatureFlags.showFruitBuyUi
                       ? [
                           _StatCard(
                             icon: Icons.shopping_basket_outlined,
@@ -376,6 +377,8 @@ class DashboardScreen extends StatelessWidget {
                             subtitle: 'Add or edit what to purchase',
                           ),
                         ]
+                      : fruitBuyerHome
+                          ? <Widget>[]
                       : [
                       _StatCard(
                         icon: Icons.local_shipping,

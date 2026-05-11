@@ -120,3 +120,46 @@ int planPriceRupees(PlanTier tier, BillingPeriod period) {
       },
   };
 }
+
+/// Labels for delivery routes (fruit pack size + alkaline when applicable).
+/// Matches kitchen pack grouping: Basic → Small, Standard → Medium, Premium → Large.
+void _appendDeliveryPackTagsForTier(PlanTier tier, List<String> out, Set<String> seen) {
+  void add(String tag) {
+    if (seen.add(tag)) out.add(tag);
+  }
+
+  switch (tier) {
+    case PlanTier.basic:
+      add('Small');
+    case PlanTier.standard:
+      add('Medium');
+    case PlanTier.premium:
+      add('Large');
+    case PlanTier.alkalineInfusedWater1L:
+      add('Alkaline');
+    case PlanTier.comboBasicAlkaline:
+      add('Small');
+      add('Alkaline');
+    case PlanTier.comboStandardAlkaline:
+      add('Medium');
+      add('Alkaline');
+    case PlanTier.comboPremiumAlkaline:
+      add('Large');
+      add('Alkaline');
+  }
+}
+
+/// Deduped tags from primary [planTier] and optional [secondaryPlanTier] (e.g. fruit + alkaline add-on).
+List<String> deliveryPackTagsForPlans({
+  required PlanTier planTier,
+  PlanTier? secondaryPlanTier,
+}) {
+  final out = <String>[];
+  final seen = <String>{};
+  _appendDeliveryPackTagsForTier(planTier, out, seen);
+  final sec = secondaryPlanTier;
+  if (sec != null) {
+    _appendDeliveryPackTagsForTier(sec, out, seen);
+  }
+  return out;
+}

@@ -5,6 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app_navigator.dart';
 import '../models/customer.dart';
+import '../models/employee.dart';
+import 'employee_payroll.dart';
 import 'phone_launch.dart';
 import 'payment_receipt_pdf.dart';
 import 'schedule_after_frame.dart';
@@ -26,6 +28,92 @@ String subscriptionLastDayRenewalWhatsAppMessage() {
 }
 
 /// Opens WhatsApp chat to [phone] with [subscriptionLastDayRenewalWhatsAppMessage].
+/// Digits for `wa.me` (country code + national number; India default for 10-digit).
+String? whatsappWaMeDigitsOrNull(String phone) {
+  var digits = sanitizedPhoneForDial(phone).replaceAll('+', '');
+  if (digits.isEmpty) return null;
+  if (digits.length == 10) {
+    digits = '91$digits';
+  }
+  return digits;
+}
+
+/// Kannada message with employee identity and monthly payroll summary for WhatsApp.
+String buildEmployeeDetailsWhatsAppMessageKannada(Employee employee) {
+  final payroll = monthlyPayrollBreakdown(employee, DateTime.now());
+  final df = DateFormat.yMMMd();
+  final money = NumberFormat.decimalPattern('en_IN');
+  final salary = money.format(employee.salaryRupees);
+  final incentive = money.format(employee.incentiveRupees);
+  final gross = money.format(employee.totalSalaryRupees);
+  final payable = money.format(payroll.payableTotalRupees);
+  final payableSalary = money.format(payroll.payableSalaryRupees);
+  final payableIncentive = money.format(payroll.payableIncentiveRupees);
+  final absentMarked = '${payroll.absentWorkingDaysInMonth}';
+  final absentApplied = '${payroll.absentDaysAppliedForPayroll}';
+  final period = DateFormat.yMMMM().format(DateTime(payroll.year, payroll.month));
+
+  final name = employee.name.trim().isEmpty ? 'ಸಹೋದ್ಯೋಗಿ' : employee.name.trim();
+
+  return 'ನಮಸ್ಕಾರ $name,\n\n'
+      'ಕೆಳಗೆ ನಿಮ್ಮ ಉದ್ಯೋಗ ಮತ್ತು ಪೇರೋಲ್ ವಿವರಗಳಿವೆ (Fruit Basket):\n\n'
+      '* ಹೆಸರು: ${employee.name.trim().isEmpty ? '—' : employee.name.trim()}\n'
+      '* ಮೊಬೈಲ್ ಸಂಖ್ಯೆ: ${employee.mobile.trim().isEmpty ? '—' : employee.mobile.trim()}\n'
+      '* ವಿಳಾಸ: ${employee.address.trim().isEmpty ? '—' : employee.address.trim()}\n'
+      '* ಕೆಲಸ ಪ್ರಾರಂಭ ದಿನಾಂಕ: ${df.format(employee.startDate)}\n'
+      '* ಮಾಸಿಕ ವೇತನ: ₹$salary\n'
+      '* ಮಾಸಿಕ ಪ್ರೋತ್ಸಾಹಕ (ಇನ್ಸೆಂಟಿವ್): ₹$incentive\n'
+      '* ಒಟ್ಟು ಮಾಸಿಕ ವೇತನ (ಗ್ರಾಸ್): ₹$gross\n\n'
+      '* ಈ ತಿಂಗಳ ಅಂದಾಜು ನಿಟ್ಟ ಪಾವತಿ ($period): ₹$payable\n'
+      '  (ವೇತನ ₹$payableSalary + ಪ್ರೋತ್ಸಾಹಕ ₹$payableIncentive)\n'
+      '* ಪಾವತಿಸಬಹುದಾದ ದಿನಗಳು: ${payroll.presentWorkingDays}/${payroll.workingDaysInMonth}\n'
+      '* ಗೈರುಹಾಜರಾತಿ (ಮಾರ್ಕ್ ಮಾಡಿದ್ದು / ವೇತನಕ್ಕೆ ಅನ್ವಯ): '
+      '$absentMarked / $absentApplied\n\n'
+      'ಯಾವುದೇ ತಪ್ಪು ಇದ್ದರೆ ಬೇಗ ಸಂಪರ್ಕಿಸಿ.\n\n'
+      'ಧನ್ಯವಾದಗಳು,\n'
+      'Fruit Basket ತಂಡ';
+}
+
+/// Opens WhatsApp with [buildEmployeeDetailsWhatsAppMessageKannada].
+Future<void> openEmployeeDetailsWhatsAppKannada(
+  BuildContext context,
+  Employee employee,
+) async {
+  final digits = whatsappWaMeDigitsOrNull(employee.mobile);
+  if (digits == null) {
+    final root = rootNavigatorContext;
+    final snackCtx = root != null && root.mounted ? root : context;
+    if (!snackCtx.mounted) return;
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(
+        content: Text('No valid WhatsApp number for this employee'),
+      ),
+    );
+    return;
+  }
+
+  final text = buildEmployeeDetailsWhatsAppMessageKannada(employee);
+  final uri = Uri(
+    scheme: 'https',
+    host: 'wa.me',
+    path: '/$digits',
+    queryParameters: <String, String>{'text': text},
+  );
+
+  final ok = await launchUrl(
+    uri,
+    mode: LaunchMode.externalApplication,
+  );
+  final root = rootNavigatorContext;
+  final snackCtx = root != null && root.mounted ? root : context;
+  if (!snackCtx.mounted) return;
+  if (!ok) {
+    ScaffoldMessenger.of(snackCtx).showSnackBar(
+      const SnackBar(content: Text('Could not open WhatsApp')),
+    );
+  }
+}
+
 Future<void> openSubscriptionExpiryWhatsApp(
   BuildContext context,
   String phone,
